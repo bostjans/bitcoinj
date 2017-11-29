@@ -16,6 +16,7 @@
 
 package org.bitcoinj.core;
 
+import org.bitcoinj.wallet.SendRequest;
 import org.slf4j.*;
 
 import static com.google.common.base.Preconditions.*;
@@ -27,7 +28,6 @@ import static com.google.common.base.Preconditions.*;
 // TODO: Move Threading.USER_THREAD to here and leave behind just a source code stub. Allow different instantiations of the library to use different user threads.
 // TODO: Keep a URI to where library internal data files can be found, to abstract over the lack of JAR files on Android.
 // TODO: Stash anything else that resembles global library configuration in here and use it to clean up the rest of the API without breaking people.
-// TODO: Move the TorClient into Context, so different parts of the library can read data over Tor without having to request it directly. (or maybe a general socket factory??)
 
 /**
  * <p>The Context object holds various objects and pieces of configuration that are scoped to a specific instantiation of
@@ -43,11 +43,13 @@ import static com.google.common.base.Preconditions.*;
 public class Context {
     private static final Logger log = LoggerFactory.getLogger(Context.class);
 
-    private TxConfidenceTable confidenceTable;
-    private NetworkParameters params;
-    private int eventHorizon = 100;
-    private boolean ensureMinRequiredFee = true;
-    private Coin feePerKb = Transaction.DEFAULT_TX_FEE;
+    public static final int DEFAULT_EVENT_HORIZON = 100;
+
+    final private TxConfidenceTable confidenceTable;
+    final private NetworkParameters params;
+    final private int eventHorizon;
+    final private boolean ensureMinRequiredFee;
+    final private Coin feePerKb;
 
     /**
      * Creates a new context object. For now, this will be done for you by the framework. Eventually you will be
@@ -56,12 +58,7 @@ public class Context {
      * @param params The network parameters that will be associated with this context.
      */
     public Context(NetworkParameters params) {
-        log.info("Creating bitcoinj {} context.", VersionMessage.BITCOINJ_VERSION);
-        this.confidenceTable = new TxConfidenceTable();
-        this.params = params;
-        lastConstructed = this;
-        // We may already have a context in our TLS slot. This can happen a lot during unit tests, so just ignore it.
-        slot.set(this);
+        this(params, DEFAULT_EVENT_HORIZON, Transaction.DEFAULT_TX_FEE, true);
     }
 
     /**
@@ -73,15 +70,19 @@ public class Context {
      * @param ensureMinRequiredFee Whether to ensure the minimum required fee by default when completing transactions. For details, see {@link SendRequest#ensureMinRequiredFee}.
      */
     public Context(NetworkParameters params, int eventHorizon, Coin feePerKb, boolean ensureMinRequiredFee) {
-        this(params);
+        log.info("Creating bitcoinj {} context.", VersionMessage.BITCOINJ_VERSION);
+        this.confidenceTable = new TxConfidenceTable();
+        this.params = params;
         this.eventHorizon = eventHorizon;
-        this.feePerKb = feePerKb;
         this.ensureMinRequiredFee = ensureMinRequiredFee;
+        this.feePerKb = feePerKb;
+        lastConstructed = this;
+        slot.set(this);
     }
 
     private static volatile Context lastConstructed;
     private static boolean isStrictMode;
-    private static final ThreadLocal<Context> slot = new ThreadLocal<Context>();
+    private static final ThreadLocal<Context> slot = new ThreadLocal<>();
 
     /**
      * Returns the current context that is associated with the <b>calling thread</b>. BitcoinJ is an API that has thread

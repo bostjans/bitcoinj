@@ -27,6 +27,7 @@ import org.bitcoinj.protocols.payments.PaymentProtocol;
 import org.bitcoinj.protocols.payments.PaymentProtocolException;
 import org.bitcoinj.protocols.payments.PaymentSession;
 import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.script.ScriptException;
 import org.bitcoinj.store.*;
 import org.bitcoinj.uri.BitcoinURI;
 import org.bitcoinj.uri.BitcoinURIParseException;
@@ -41,7 +42,6 @@ import com.google.common.io.Resources;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.protobuf.ByteString;
-import com.subgraph.orchid.TorClient;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
@@ -234,7 +234,6 @@ public class WalletTool {
         OptionSpec<String> passwordFlag = parser.accepts("password").withRequiredArg();
         OptionSpec<String> paymentRequestLocation = parser.accepts("payment-request").withRequiredArg();
         parser.accepts("no-pki");
-        parser.accepts("tor");
         parser.accepts("dump-privkeys");
         OptionSpec<String> refundFlag = parser.accepts("refund-to").withRequiredArg();
         OptionSpec<String> txHashFlag = parser.accepts("txhash").withRequiredArg();
@@ -1201,13 +1200,6 @@ public class WalletTool {
         }
         // This will ensure the wallet is saved when it changes.
         wallet.autosaveToFile(walletFile, 5, TimeUnit.SECONDS, null);
-        if (options.has("tor")) {
-            try {
-                peers = PeerGroup.newWithTor(params, chain, new TorClient());
-            } catch (TimeoutException e) {
-                System.err.println("Tor startup timed out, falling back to clear net ...");
-            }
-        }
         if (peers == null) {
             peers = new PeerGroup(params, chain);
         }
@@ -1220,14 +1212,12 @@ public class WalletTool {
             String[] peerAddrs = peersFlag.split(",");
             for (String peer : peerAddrs) {
                 try {
-                    peers.addAddress(new PeerAddress(InetAddress.getByName(peer), params.getPort()));
+                    peers.addAddress(new PeerAddress(params, InetAddress.getByName(peer)));
                 } catch (UnknownHostException e) {
                     System.err.println("Could not understand peer domain name/IP address: " + peer + ": " + e.getMessage());
                     System.exit(1);
                 }
             }
-        } else if (!options.has("tor")) {
-            peers.addPeerDiscovery(new DnsDiscovery(params));
         }
     }
 
@@ -1458,7 +1448,21 @@ public class WalletTool {
         // there just for the dump case.
         if (chainFileName.exists())
             setup();
-        System.out.println(wallet.toString(options.has("dump-privkeys"), true, true, chain));
+
+        final boolean dumpPrivkeys = options.has("dump-privkeys");
+        if (dumpPrivkeys && wallet.isEncrypted()) {
+            if (password != null) {
+                final KeyParameter aesKey = passwordToKey(true);
+                if (aesKey == null)
+                    return; // Error message already printed.
+                System.out.println(wallet.toString(true, aesKey, true, true, chain));
+            } else {
+                System.err.println("Can't dump privkeys, wallet is encrypted.");
+                return;
+            }
+        } else {
+            System.out.println(wallet.toString(dumpPrivkeys, null, true, true, chain));
+        }
     }
 
     private static void setCreationTime() {

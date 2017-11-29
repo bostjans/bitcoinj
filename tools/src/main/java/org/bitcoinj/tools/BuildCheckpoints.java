@@ -211,7 +211,14 @@ public class BuildCheckpoints {
     }
 
     private static void sanityCheck(File file, int expectedSize) throws IOException {
-        CheckpointManager manager = new CheckpointManager(params, new FileInputStream(file));
+        FileInputStream fis = new FileInputStream(file);
+        CheckpointManager manager;
+        try {
+            manager = new CheckpointManager(params, fis);
+        } finally {
+            fis.close();
+        }
+
         checkState(manager.numCheckpoints() == expectedSize);
 
         if (params.getId().equals(NetworkParameters.ID_MAINNET)) {
@@ -228,7 +235,7 @@ public class BuildCheckpoints {
     }
 
     private static void startPeerGroup(PeerGroup peerGroup, InetAddress ipAddress) {
-        final PeerAddress peerAddress = new PeerAddress(ipAddress, params.getPort());
+        final PeerAddress peerAddress = new PeerAddress(params, ipAddress);
         System.out.println("Connecting to " + peerAddress + "...");
         peerGroup.addAddress(peerAddress);
         peerGroup.start();
