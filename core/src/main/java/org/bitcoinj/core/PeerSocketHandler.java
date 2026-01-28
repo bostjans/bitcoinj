@@ -16,34 +16,44 @@
 
 package org.bitcoinj.core;
 
-import org.bitcoinj.net.AbstractTimeoutHandler;
-import org.bitcoinj.net.MessageWriteTarget;
-import org.bitcoinj.net.StreamConnection;
-import org.bitcoinj.utils.Threading;
 import com.google.common.annotations.VisibleForTesting;
+import org.bitcoinj.base.internal.FutureUtils;
+import org.bitcoinj.net.MessageWriteTarget;
+import org.bitcoinj.net.NioClient;
+import org.bitcoinj.net.NioClientManager;
+import org.bitcoinj.net.SocketTimeoutTask;
+import org.bitcoinj.net.StreamConnection;
+import org.bitcoinj.net.TimeoutHandler;
+import org.bitcoinj.utils.Threading;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.nio.Buffer;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.NotYetConnectedException;
+import java.time.Duration;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.Lock;
 
-import static com.google.common.base.Preconditions.*;
+import static org.bitcoinj.base.internal.Preconditions.checkArgument;
+import static org.bitcoinj.base.internal.Preconditions.checkState;
 
 /**
  * Handles high-level message (de)serialization for peers, acting as the bridge between the
- * {@link org.bitcoinj.net} classes and {@link Peer}.
+ * {@code org.bitcoinj.net} classes and {@link Peer}.
  */
-public abstract class PeerSocketHandler extends AbstractTimeoutHandler implements StreamConnection {
+public abstract class PeerSocketHandler implements TimeoutHandler, StreamConnection {
     private static final Logger log = LoggerFactory.getLogger(PeerSocketHandler.class);
+    private final Lock lock = Threading.lock(PeerSocketHandler.class);
+    private final SocketTimeoutTask timeoutTask;
 
     private final MessageSerializer serializer;
-    protected PeerAddress peerAddress;
+    protected final PeerAddress peerAddress;
     // If we close() before we know our writeTarget, set this to true to call writeTarget.closeConnection() right away.
     private boolean closePending = false;
     // writeTarget will be thread-safe, and may call into PeerGroup, which calls us, so we should call it unlocked
@@ -56,18 +66,25 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
     private int largeReadBufferPos;
     private BitcoinSerializer.BitcoinPacketHeader header;
 
-    private Lock lock = Threading.lock("PeerSocketHandler");
-
     public PeerSocketHandler(NetworkParameters params, InetSocketAddress remoteIp) {
-        checkNotNull(params);
-        serializer = params.getDefaultSerializer();
-        this.peerAddress = new PeerAddress(params, remoteIp);
+        this(params, PeerAddress.simple(remoteIp));
     }
 
     public PeerSocketHandler(NetworkParameters params, PeerAddress peerAddress) {
-        checkNotNull(params);
+        Objects.requireNonNull(params);
         serializer = params.getDefaultSerializer();
-        this.peerAddress = checkNotNull(peerAddress);
+        this.peerAddress = Objects.requireNonNull(peerAddress);
+        this.timeoutTask = new SocketTimeoutTask(this::timeoutOccurred);
+    }
+
+    @Override
+    public void setTimeoutEnabled(boolean timeoutEnabled) {
+        timeoutTask.setTimeoutEnabled(timeoutEnabled);
+    }
+
+    @Override
+    public void setSocketTimeout(Duration timeout) {
+        timeoutTask.setSocketTimeout(timeout);
     }
 
     /**
@@ -75,7 +92,7 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
      * the peer will have received it. Throws NotYetConnectedException if we are not yet connected to the remote peer.
      * TODO: Maybe use something other than the unchecked NotYetConnectedException here
      */
-    public void sendMessage(Message message) throws NotYetConnectedException {
+    public CompletableFuture<Void> sendMessage(Message message) throws NotYetConnectedException {
         lock.lock();
         try {
             if (writeTarget == null)
@@ -87,9 +104,10 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
             serializer.serialize(message, out);
-            writeTarget.writeBytes(out.toByteArray());
+            return writeTarget.writeBytes(out.toByteArray());
         } catch (IOException e) {
             exceptionCaught(e);
+            return FutureUtils.failedFuture(e);
         }
     }
 
@@ -109,7 +127,6 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
         writeTarget.closeConnection();
     }
 
-    @Override
     protected void timeoutOccurred() {
         log.info("{}: Timed out", getAddress());
         close();
@@ -155,7 +172,7 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
                     // If we went through the whole buffer without a full message, we need to use the largeReadBuffer
                     if (firstMessage && buff.limit() == buff.capacity()) {
                         // ...so reposition the buffer to 0 and read the next message header
-                        buff.position(0);
+                        ((Buffer) buff).position(0);
                         try {
                             serializer.seekPastMagicBytes(buff);
                             header = serializer.deserializeHeader(buff);
@@ -174,7 +191,7 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
                     } else {
                         // Reposition the buffer to its original position, which saves us from skipping messages by
                         // seeking past part of the magic bytes before all of them are in the buffer
-                        buff.position(preSerializePosition);
+                        ((Buffer) buff).position(preSerializePosition);
                     }
                     return buff.position();
                 }
@@ -190,8 +207,8 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
 
     /**
      * Sets the {@link MessageWriteTarget} used to write messages to the peer. This should almost never be called, it is
-     * called automatically by {@link org.bitcoinj.net.NioClient} or
-     * {@link org.bitcoinj.net.NioClientManager} once the socket finishes initialization.
+     * called automatically by {@link NioClient} or
+     * {@link NioClientManager} once the socket finishes initialization.
      */
     @Override
     public void setWriteTarget(MessageWriteTarget writeTarget) {
@@ -225,11 +242,11 @@ public abstract class PeerSocketHandler extends AbstractTimeoutHandler implement
     private void exceptionCaught(Exception e) {
         PeerAddress addr = getAddress();
         String s = addr == null ? "?" : addr.toString();
-        if (e instanceof ConnectException || e instanceof IOException) {
+        if (e instanceof IOException) {
             // Short message for network errors
-            log.info(s + " - " + e.getMessage());
+            log.info("{} - {}", s, e.getMessage());
         } else {
-            log.warn(s + " - ", e);
+            log.warn("Exception communicating with Peer at {}", s, e);
             Thread.UncaughtExceptionHandler handler = Threading.uncaughtExceptionHandler;
             if (handler != null)
                 handler.uncaughtException(Thread.currentThread(), e);

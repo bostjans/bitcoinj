@@ -16,18 +16,33 @@
 
 package org.bitcoinj.core;
 
-import org.bitcoinj.params.*;
-import org.bitcoinj.testing.*;
-import org.bitcoinj.utils.*;
-import org.junit.*;
+import org.bitcoinj.base.Address;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.base.Sha256Hash;
+import org.bitcoinj.crypto.ECKey;
+import org.bitcoinj.params.TestNet3Params;
+import org.bitcoinj.testing.FakeTxBuilder;
+import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.utils.Threading;
+import org.junit.Before;
+import org.junit.Test;
 
-import java.net.*;
+import java.net.InetAddress;
+import java.nio.ByteBuffer;
 
-import static org.bitcoinj.core.Coin.*;
-import static org.junit.Assert.*;
+import static org.bitcoinj.base.Coin.COIN;
+import static org.easymock.EasyMock.anyObject;
+import static org.easymock.EasyMock.createMock;
+import static org.easymock.EasyMock.expect;
+import static org.easymock.EasyMock.expectLastCall;
+import static org.easymock.EasyMock.replay;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 public class TxConfidenceTableTest {
-    private static final NetworkParameters PARAMS = UnitTestParams.get();
+    private static final NetworkParameters TESTNET = TestNet3Params.get();
     private Transaction tx1, tx2;
     private PeerAddress address1, address2, address3;
     private TxConfidenceTable table;
@@ -35,34 +50,30 @@ public class TxConfidenceTableTest {
     @Before
     public void setup() throws Exception {
         BriefLogFormatter.init();
-        Context context = new Context(PARAMS);
+        Context context = new Context();
+        Context.propagate(context);
         table = context.getConfidenceTable();
 
-        Address to = new ECKey().toAddress(PARAMS);
-        Address change = new ECKey().toAddress(PARAMS);
+        Address to = ECKey.random().toAddress(ScriptType.P2PKH, BitcoinNetwork.TESTNET);
+        Address change = ECKey.random().toAddress(ScriptType.P2PKH, BitcoinNetwork.TESTNET);
 
-        tx1 = FakeTxBuilder.createFakeTxWithChangeAddress(PARAMS, COIN, to, change);
-        tx2 = FakeTxBuilder.createFakeTxWithChangeAddress(PARAMS, COIN, to, change);
-        assertEquals(tx1.getHash(), tx2.getHash());
+        tx1 = FakeTxBuilder.createFakeTxWithChangeAddress(COIN, to, change);
+        tx2 = FakeTxBuilder.createFakeTxWithChangeAddress(COIN, to, change);
+        assertEquals(tx1.getTxId(), tx2.getTxId());
 
-        address1 = new PeerAddress(PARAMS, InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 }));
-        address2 = new PeerAddress(PARAMS, InetAddress.getByAddress(new byte[] { 127, 0, 0, 2 }));
-        address3 = new PeerAddress(PARAMS, InetAddress.getByAddress(new byte[] { 127, 0, 0, 3 }));
+        address1 = PeerAddress.simple(InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 }), TESTNET.getPort());
+        address2 = PeerAddress.simple(InetAddress.getByAddress(new byte[] { 127, 0, 0, 2 }), TESTNET.getPort());
+        address3 = PeerAddress.simple(InetAddress.getByAddress(new byte[] { 127, 0, 0, 3 }), TESTNET.getPort());
     }
 
     @Test
-    public void pinHandlers() throws Exception {
-        Transaction tx = PARAMS.getDefaultSerializer().makeTransaction(tx1.bitcoinSerialize());
-        Sha256Hash hash = tx.getHash();
+    public void pinHandlers() {
+        Transaction tx = TESTNET.getDefaultSerializer().makeTransaction(ByteBuffer.wrap(tx1.serialize()));
+        Sha256Hash hash = tx.getTxId();
         table.seen(hash, address1);
         assertEquals(1, tx.getConfidence().numBroadcastPeers());
         final int[] seen = new int[1];
-        tx.getConfidence().addEventListener(Threading.SAME_THREAD, new TransactionConfidence.Listener() {
-            @Override
-            public void onConfidenceChanged(TransactionConfidence confidence, ChangeReason reason) {
-                seen[0] = confidence.numBroadcastPeers();
-            }
-        });
+        tx.getConfidence().addEventListener(Threading.SAME_THREAD, (confidence, reason) -> seen[0] = confidence.numBroadcastPeers());
         tx = null;
         System.gc();
         table.seen(hash, address2);
@@ -70,33 +81,62 @@ public class TxConfidenceTableTest {
     }
 
     @Test
-    public void events() throws Exception {
+    public void events() {
         final TransactionConfidence.Listener.ChangeReason[] run = new TransactionConfidence.Listener.ChangeReason[1];
-        tx1.getConfidence().addEventListener(Threading.SAME_THREAD, new TransactionConfidence.Listener() {
-            @Override
-            public void onConfidenceChanged(TransactionConfidence confidence, ChangeReason reason) {
-                run[0] = reason;
-            }
-        });
-        table.seen(tx1.getHash(), address1);
+        tx1.getConfidence().addEventListener(Threading.SAME_THREAD, (confidence, reason) -> run[0] = reason);
+        table.seen(tx1.getTxId(), address1);
         assertEquals(TransactionConfidence.Listener.ChangeReason.SEEN_PEERS, run[0]);
         run[0] = null;
-        table.seen(tx1.getHash(), address1);
+        table.seen(tx1.getTxId(), address1);
         assertNull(run[0]);
     }
 
     @Test
-    public void invAndDownload() throws Exception {
+    public void testSeen() {
+        PeerAddress peer = createMock(PeerAddress.class);
+
+        Sha256Hash brokenHash = createMock(Sha256Hash.class);
+        Sha256Hash correctHash = createMock(Sha256Hash.class);
+
+        TransactionConfidence brokenConfidence = createMock(TransactionConfidence.class);
+        expect(brokenConfidence.getTransactionHash()).andReturn(brokenHash);
+        expect(brokenConfidence.markBroadcastBy(peer)).andThrow(new ArithmeticException("some error"));
+
+        TransactionConfidence correctConfidence = createMock(TransactionConfidence.class);
+        expect(correctConfidence.getTransactionHash()).andReturn(correctHash);
+        expect(correctConfidence.markBroadcastBy(peer)).andReturn(true);
+        correctConfidence.queueListeners(anyObject(TransactionConfidence.Listener.ChangeReason.class));
+        expectLastCall();
+
+        TransactionConfidence.Factory factory = createMock(TransactionConfidence.Factory.class);
+        expect(factory.createConfidence(brokenHash)).andReturn(brokenConfidence);
+        expect(factory.createConfidence(correctHash)).andReturn(correctConfidence);
+
+        replay(factory, brokenConfidence, correctConfidence);
+
+        TxConfidenceTable table = new TxConfidenceTable(1, factory);
+
+        try {
+            table.seen(brokenHash, peer);
+        } catch (ArithmeticException expected) {
+            // do nothing
+        }
+
+        assertNotNull(table.seen(correctHash, peer));
+    }
+
+    @Test
+    public void invAndDownload() {
         // Base case: we see a transaction announced twice and then download it. The count is in the confidence object.
-        assertEquals(0, table.numBroadcastPeers(tx1.getHash()));
-        table.seen(tx1.getHash(), address1);
-        assertEquals(1, table.numBroadcastPeers(tx1.getHash()));
-        table.seen(tx1.getHash(), address2);
-        assertEquals(2, table.numBroadcastPeers(tx1.getHash()));
+        assertEquals(0, table.numBroadcastPeers(tx1.getTxId()));
+        table.seen(tx1.getTxId(), address1);
+        assertEquals(1, table.numBroadcastPeers(tx1.getTxId()));
+        table.seen(tx1.getTxId(), address2);
+        assertEquals(2, table.numBroadcastPeers(tx1.getTxId()));
         assertEquals(2, tx2.getConfidence().numBroadcastPeers());
         // And now we see another inv.
-        table.seen(tx1.getHash(), address3);
+        table.seen(tx1.getTxId(), address3);
         assertEquals(3, tx2.getConfidence().numBroadcastPeers());
-        assertEquals(3, table.numBroadcastPeers(tx1.getHash()));
+        assertEquals(3, table.numBroadcastPeers(tx1.getTxId()));
     }
 }

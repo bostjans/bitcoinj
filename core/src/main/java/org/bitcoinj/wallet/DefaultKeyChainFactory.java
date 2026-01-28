@@ -1,5 +1,6 @@
 /*
  * Copyright 2014 devrandom
+ * Copyright 2019 Andreas Schildbach
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,43 +17,30 @@
 
 package org.bitcoinj.wallet;
 
-import org.bitcoinj.crypto.*;
-
-import com.google.common.collect.ImmutableList;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.crypto.DeterministicKey;
+import org.bitcoinj.crypto.HDPath;
+import org.bitcoinj.crypto.KeyCrypter;
 
 /**
  * Default factory for creating keychains while de-serializing.
  */
 public class DefaultKeyChainFactory implements KeyChainFactory {
     @Override
-    public DeterministicKeyChain makeKeyChain(Protos.Key key, Protos.Key firstSubKey, DeterministicSeed seed, KeyCrypter crypter, boolean isMarried) {
-        DeterministicKeyChain chain;
-        if (isMarried)
-            chain = new MarriedKeyChain(seed, crypter);
-        else
-            chain = new DeterministicKeyChain(seed, crypter);
-        return chain;
+    public DeterministicKeyChain makeKeyChain(DeterministicSeed seed, KeyCrypter crypter,
+                                              ScriptType outputScriptType, HDPath.HDPartialPath accountPath) {
+        return new DeterministicKeyChain(seed, crypter, outputScriptType, accountPath);
     }
 
     @Override
-    public DeterministicKeyChain makeKeyChain(Protos.Key key, Protos.Key firstSubKey, DeterministicSeed seed,
-                                              KeyCrypter crypter, boolean isMarried, ImmutableList<ChildNumber> accountPath) {
-        DeterministicKeyChain chain;
-        if (isMarried)
-            chain = new MarriedKeyChain(seed, crypter);
-        else
-            chain = new DeterministicKeyChain(seed, crypter, accountPath);
-        return chain;
+    public DeterministicKeyChain makeWatchingKeyChain(DeterministicKey accountKey,
+                                                      ScriptType outputScriptType) throws UnreadableWalletException {
+        return DeterministicKeyChain.builder().watch(accountKey).outputScriptType(outputScriptType).build();
     }
 
     @Override
-    public DeterministicKeyChain makeWatchingKeyChain(Protos.Key key, Protos.Key firstSubKey, DeterministicKey accountKey,
-                                                      boolean isFollowingKey, boolean isMarried) throws UnreadableWalletException {
-        DeterministicKeyChain chain;
-        if (isMarried)
-            chain = new MarriedKeyChain(accountKey);
-        else
-            chain = new DeterministicKeyChain(accountKey, isFollowingKey, accountKey.getPath());
-        return chain;
+    public DeterministicKeyChain makeSpendingKeyChain(DeterministicKey accountKey,
+                                                      ScriptType outputScriptType) throws UnreadableWalletException {
+        return DeterministicKeyChain.builder().spend(accountKey).outputScriptType(outputScriptType).build();
     }
 }

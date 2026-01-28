@@ -18,6 +18,10 @@ package org.bitcoinj.core;
 
 @SuppressWarnings("serial")
 public class VerificationException extends RuntimeException {
+    public VerificationException() {
+        super();
+    }
+
     public VerificationException(String msg) {
         super(msg);
     }
@@ -84,6 +88,12 @@ public class VerificationException extends RuntimeException {
     public static class CoinbaseHeightMismatch extends VerificationException {
         public CoinbaseHeightMismatch(final String message) {
             super(message);
+        }
+    }
+
+    public static class NoncanonicalSignature extends VerificationException {
+        public NoncanonicalSignature() {
+            super("Signature encoding is not canonical");
         }
     }
 }

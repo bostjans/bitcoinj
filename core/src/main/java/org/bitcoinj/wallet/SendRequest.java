@@ -17,28 +17,19 @@
 
 package org.bitcoinj.wallet;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
-
-import java.math.BigInteger;
-import java.util.Date;
-
-import org.bitcoin.protocols.payments.Protos.PaymentDetails;
-import org.bitcoinj.core.Address;
-import org.bitcoinj.core.Coin;
+import com.google.common.base.MoreObjects;
+import org.bitcoinj.base.Address;
+import org.bitcoinj.base.Coin;
+import org.bitcoinj.crypto.AesKey;
 import org.bitcoinj.core.Context;
-import org.bitcoinj.core.ECKey;
-import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.crypto.ECKey;
 import org.bitcoinj.core.Transaction;
 import org.bitcoinj.core.TransactionOutput;
-import org.bitcoinj.script.Script;
-import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.utils.ExchangeRate;
 import org.bitcoinj.wallet.KeyChain.KeyPurpose;
 import org.bitcoinj.wallet.Wallet.MissingSigsMode;
-import org.spongycastle.crypto.params.KeyParameter;
 
-import com.google.common.base.MoreObjects;
+import java.util.Objects;
 
 /**
  * A SendRequest gives the wallet information about precisely how to send money to a recipient or set of recipients.
@@ -61,11 +52,11 @@ public class SendRequest {
      * key, otherwise the behavior of {@link Wallet#completeTx(SendRequest)} is undefined (likely
      * RuntimeException).</p>
      */
-    public Transaction tx;
+    public final Transaction tx;
 
     /**
      * When emptyWallet is set, all coins selected by the coin selector are sent to the first output in tx
-     * (its value is ignored and set to {@link org.bitcoinj.wallet.Wallet#getBalance()} - the fees required
+     * (its value is ignored and set to {@link Wallet#getBalance()} - the fees required
      * for the transaction). Any additional outputs are removed.
      */
     public boolean emptyWallet = false;
@@ -84,12 +75,16 @@ public class SendRequest {
      * a way for people to prioritize their transactions over others and is used as a way to make denial of service
      * attacks expensive.</p>
      *
-     * <p>This is a dynamic fee (in satoshis) which will be added to the transaction for each kilobyte in size
+     * <p>This is a dynamic fee (in satoshis) which will be added to the transaction for each virtual kilobyte in size
      * including the first. This is useful as as miners usually sort pending transactions by their fee per unit size
      * when choosing which transactions to add to a block. Note that, to keep this equivalent to Bitcoin Core
-     * definition, a kilobyte is defined as 1000 bytes, not 1024.</p>
+     * definition, a virtual kilobyte is defined as 1000 virtual bytes, not 1024.</p>
      */
     public Coin feePerKb = Context.get().getFeePerKb();
+
+    public void setFeePerVkb(Coin feePerVkb) {
+        this.feePerKb = feePerVkb;
+    }
 
     /**
      * <p>Requires that there be enough fee for a default Bitcoin Core to at least relay the transaction.
@@ -98,7 +93,7 @@ public class SendRequest {
      *
      * <p>Note that this does not enforce certain fee rules that only apply to transactions which are larger than
      * 26,000 bytes. If you get a transaction which is that large, you should set a feePerKb of at least
-     * {@link Transaction#REFERENCE_DEFAULT_MIN_TX_FEE}.</p>
+     * {@link Transaction#REFERENCE_DEFAULT_MIN_TX_FEE_RATE}.</p>
      */
     public boolean ensureMinRequiredFee = Context.get().isEnsureMinRequiredFee();
 
@@ -112,14 +107,21 @@ public class SendRequest {
      * If null then no decryption will be performed and if decryption is required an exception will be thrown.
      * You can get this from a password by doing wallet.getKeyCrypter().deriveKey(password).
      */
-    public KeyParameter aesKey = null;
+    public AesKey aesKey = null;
 
     /**
-     * If not null, the {@link org.bitcoinj.wallet.CoinSelector} to use instead of the wallets default. Coin selectors are
+     * If not null, the {@link CoinSelector} to use instead of the wallets default. Coin selectors are
      * responsible for choosing which transaction outputs (coins) in a wallet to use given the desired send value
      * amount.
      */
     public CoinSelector coinSelector = null;
+
+    /**
+     * Shortcut for {@code req.coinSelector = AllowUnconfirmedCoinSelector.get();}.
+     */
+    public void allowUnconfirmed() {
+        coinSelector = AllowUnconfirmedCoinSelector.get();
+    }
 
     /**
      * If true (the default), the outputs will be shuffled during completion to randomize the location of the change
@@ -155,21 +157,21 @@ public class SendRequest {
     // Tracks if this has been passed to wallet.completeTx already: just a safety check.
     boolean completed;
 
-    private SendRequest() {}
+    private SendRequest(Transaction transaction) {
+        tx = transaction;
+    }
 
     /**
      * <p>Creates a new SendRequest to the given address for the given value.</p>
      *
-     * <p>Be very careful when value is smaller than {@link Transaction#MIN_NONDUST_OUTPUT} as the transaction will
-     * likely be rejected by the network in this case.</p>
+     * <p>Be careful to check the output's value is reasonable using
+     * {@link TransactionOutput#getMinNonDustValue(Coin)} afterwards or you risk having the transaction
+     * rejected by the network.</p>
      */
     public static SendRequest to(Address destination, Coin value) {
-        SendRequest req = new SendRequest();
-        final NetworkParameters parameters = destination.getParameters();
-        checkNotNull(parameters, "Address is for an unknown network");
-        req.tx = new Transaction(parameters);
-        req.tx.addOutput(value, destination);
-        return req;
+        Transaction tx = new Transaction();
+        tx.addOutput(value, destination);
+        return new SendRequest(tx);
     }
 
     /**
@@ -180,26 +182,21 @@ public class SendRequest {
      * rejected by the network. Note that using {@link SendRequest#to(Address, Coin)} will result
      * in a smaller output, and thus the ability to use a smaller output value without rejection.</p>
      */
-    public static SendRequest to(NetworkParameters params, ECKey destination, Coin value) {
-        SendRequest req = new SendRequest();
-        req.tx = new Transaction(params);
-        req.tx.addOutput(value, destination);
-        return req;
+    public static SendRequest to(ECKey destination, Coin value) {
+        Transaction tx = new Transaction();
+        tx.addOutput(value, destination);
+        return new SendRequest(tx);
     }
 
     /** Simply wraps a pre-built incomplete transaction provided by you. */
     public static SendRequest forTx(Transaction tx) {
-        SendRequest req = new SendRequest();
-        req.tx = tx;
-        return req;
+        return new SendRequest(tx);
     }
 
     public static SendRequest emptyWallet(Address destination) {
-        SendRequest req = new SendRequest();
-        final NetworkParameters parameters = destination.getParameters();
-        checkNotNull(parameters, "Address is for an unknown network");
-        req.tx = new Transaction(parameters);
-        req.tx.addOutput(Coin.ZERO, destination);
+        Transaction tx = new Transaction();
+        tx.addOutput(Coin.ZERO, destination);
+        SendRequest req = new SendRequest(tx);
         req.emptyWallet = true;
         return req;
     }
@@ -219,41 +216,15 @@ public class SendRequest {
             }
         }
         // TODO spend another confirmed output of own wallet if needed
-        checkNotNull(outputToSpend, "Can't find adequately sized output that spends to us");
+        Objects.requireNonNull(outputToSpend, "Can't find adequately sized output that spends to us");
 
-        final Transaction tx = new Transaction(parentTransaction.getParams());
+        final Transaction tx = new Transaction();
         tx.addInput(outputToSpend);
         tx.addOutput(outputToSpend.getValue().subtract(feeRaise), wallet.freshAddress(KeyPurpose.CHANGE));
         tx.setPurpose(Transaction.Purpose.RAISE_FEE);
         final SendRequest req = forTx(tx);
         req.completed = true;
         return req;
-    }
-
-    public static SendRequest toCLTVPaymentChannel(NetworkParameters params, Date releaseTime, ECKey from, ECKey to, Coin value) {
-        long time = releaseTime.getTime() / 1000L;
-        checkArgument(time >= Transaction.LOCKTIME_THRESHOLD, "Release time was too small");
-        return toCLTVPaymentChannel(params, BigInteger.valueOf(time), from, to, value);
-    }
-
-    public static SendRequest toCLTVPaymentChannel(NetworkParameters params, int releaseBlock, ECKey from, ECKey to, Coin value) {
-        checkArgument(0 <= releaseBlock && releaseBlock < Transaction.LOCKTIME_THRESHOLD, "Block number was too large");
-        return toCLTVPaymentChannel(params, BigInteger.valueOf(releaseBlock), from, to, value);
-    }
-
-    public static SendRequest toCLTVPaymentChannel(NetworkParameters params, BigInteger time, ECKey from, ECKey to, Coin value) {
-        SendRequest req = new SendRequest();
-        Script output = ScriptBuilder.createCLTVPaymentChannelOutput(time, from, to);
-        req.tx = new Transaction(params);
-        req.tx.addOutput(value, output);
-        return req;
-    }
-
-    /** Copy data from payment request. */
-    public SendRequest fromPaymentDetails(PaymentDetails paymentDetails) {
-        if (paymentDetails.hasMemo())
-            this.memo = paymentDetails.getMemo();
-        return this;
     }
 
     @Override

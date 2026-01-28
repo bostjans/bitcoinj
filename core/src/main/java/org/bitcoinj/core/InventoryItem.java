@@ -1,5 +1,6 @@
 /*
  * Copyright 2011 Google Inc.
+ * Copyright 2019 Andreas Schildbach
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +17,9 @@
 
 package org.bitcoinj.core;
 
-import com.google.common.base.Objects;
+import org.bitcoinj.base.Sha256Hash;
+
+import java.util.Objects;
 
 public class InventoryItem {
     
@@ -26,10 +29,24 @@ public class InventoryItem {
     static final int MESSAGE_LENGTH = 36;
     
     public enum Type {
-        Error,
-        Transaction,
-        Block,
-        FilteredBlock
+        ERROR(0x0), TRANSACTION(0x1), BLOCK(0x2),
+        // BIP37 extension:
+        FILTERED_BLOCK(0x3),
+        // BIP44 extensions:
+        WITNESS_TRANSACTION(0x40000001), WITNESS_BLOCK(0x40000002), WITNESS_FILTERED_BLOCK(0x40000003);
+
+        public final int code;
+
+        Type(int code) {
+            this.code = code;
+        }
+
+        public static Type ofCode(int code) {
+            for (Type type : values())
+                if (type.code == code)
+                    return type;
+            return null;
+        }
     }
 
     public final Type type;
@@ -38,6 +55,16 @@ public class InventoryItem {
     public InventoryItem(Type type, Sha256Hash hash) {
         this.type = type;
         this.hash = hash;
+    }
+
+    public InventoryItem(Block block) {
+        this.type = Type.BLOCK;
+        this.hash = block.getHash();
+    }
+
+    public InventoryItem(Transaction tx) {
+        this.type = Type.TRANSACTION;
+        this.hash = tx.getTxId();
     }
 
     @Override
@@ -55,6 +82,6 @@ public class InventoryItem {
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(type, hash);
+        return Objects.hash(type, hash);
     }
 }

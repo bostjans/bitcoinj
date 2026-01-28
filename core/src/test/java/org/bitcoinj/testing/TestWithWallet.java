@@ -16,14 +16,28 @@
 
 package org.bitcoinj.testing;
 
-import org.bitcoinj.core.*;
-import org.bitcoinj.params.UnitTestParams;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.base.internal.TimeUtils;
+import org.bitcoinj.core.AbstractBlockChain;
+import org.bitcoinj.base.Address;
+import org.bitcoinj.core.Block;
+import org.bitcoinj.core.BlockChain;
+import org.bitcoinj.base.Coin;
+import org.bitcoinj.core.Context;
+import org.bitcoinj.crypto.ECKey;
+import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.core.Transaction;
+import org.bitcoinj.core.VerificationException;
+import org.bitcoinj.params.TestNet3Params;
 import org.bitcoinj.store.BlockStore;
 import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.wallet.KeyChainGroupStructure;
 import org.bitcoinj.wallet.Wallet;
+import org.junit.BeforeClass;
 
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import static org.bitcoinj.testing.FakeTxBuilder.createFakeBlock;
 import static org.bitcoinj.testing.FakeTxBuilder.createFakeTx;
@@ -37,21 +51,27 @@ import static org.bitcoinj.testing.FakeTxBuilder.createFakeTx;
  * fee per kilobyte to zero in setUp.
  */
 public class TestWithWallet {
-    protected static final NetworkParameters PARAMS = UnitTestParams.get();
+    protected static final NetworkParameters TESTNET_PARAMS = TestNet3Params.get();
+
     protected ECKey myKey;
     protected Address myAddress;
     protected Wallet wallet;
     protected BlockChain chain;
     protected BlockStore blockStore;
 
+    @BeforeClass
+    public static void setUpClass() throws Exception {
+        TimeUtils.clearMockClock();
+    }
+
     public void setUp() throws Exception {
         BriefLogFormatter.init();
-        Context.propagate(new Context(PARAMS, 100, Coin.ZERO, false));
-        wallet = new Wallet(PARAMS);
-        myKey = wallet.currentReceiveKey();
-        myAddress = myKey.toAddress(PARAMS);
-        blockStore = new MemoryBlockStore(PARAMS);
-        chain = new BlockChain(PARAMS, wallet, blockStore);
+        Context.propagate(new Context(100, Coin.ZERO, false, true));
+        wallet = Wallet.createDeterministic(BitcoinNetwork.TESTNET, ScriptType.P2PKH, KeyChainGroupStructure.BIP32);
+        myKey = wallet.freshReceiveKey();
+        myAddress = wallet.freshReceiveAddress(ScriptType.P2PKH);
+        blockStore = new MemoryBlockStore(TESTNET_PARAMS.getGenesisBlock());
+        chain = new BlockChain(BitcoinNetwork.TESTNET, wallet, blockStore);
     }
 
     public void tearDown() throws Exception {
@@ -73,19 +93,19 @@ public class TestWithWallet {
                 wallet.notifyNewBestBlock(bp.storedBlock);
         }
         if (transactions.length == 1)
-            return wallet.getTransaction(transactions[0].getHash());  // Can be null if tx is a double spend that's otherwise irrelevant.
+            return wallet.getTransaction(transactions[0].getTxId());  // Can be null if tx is a double spend that's otherwise irrelevant.
         else
             return null;
     }
 
     @Nullable
     protected Transaction sendMoneyToWallet(Wallet wallet, AbstractBlockChain.NewBlockType type, Coin value, Address toAddress) throws VerificationException {
-        return sendMoneyToWallet(wallet, type, createFakeTx(PARAMS, value, toAddress));
+        return sendMoneyToWallet(wallet, type, createFakeTx(BitcoinNetwork.TESTNET, value, toAddress));
     }
 
     @Nullable
     protected Transaction sendMoneyToWallet(Wallet wallet, AbstractBlockChain.NewBlockType type, Coin value, ECKey toPubKey) throws VerificationException {
-        return sendMoneyToWallet(wallet, type, createFakeTx(PARAMS, value, toPubKey));
+        return sendMoneyToWallet(wallet, type, createFakeTx(value, toPubKey));
     }
 
     @Nullable

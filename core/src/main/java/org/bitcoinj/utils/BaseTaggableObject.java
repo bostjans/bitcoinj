@@ -16,34 +16,31 @@
 
 package org.bitcoinj.utils;
 
-import com.google.common.collect.Maps;
 import com.google.protobuf.ByteString;
 
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import java.util.HashMap;
 import java.util.Map;
-
-import static com.google.common.base.Preconditions.checkNotNull;
+import java.util.Objects;
 
 /**
- * A simple implementation of {@link TaggableObject} that just uses a lazily created hashmap that is
- * synchronized on this objects Java monitor.
+ * A simple implementation of {@link TaggableObject} that uses a hashmap that is
+ * synchronized on this object's Java monitor.
+ * @deprecated Applications should use another mechanism to persist application state data
  */
+@Deprecated
 public class BaseTaggableObject implements TaggableObject {
-    @Nullable protected Map<String, ByteString> tags;
+    protected final Map<String, ByteString> tags = new HashMap<>();
 
-    /** {@inheritDoc} */
     @Override
     @Nullable
+    @Deprecated
     public synchronized ByteString maybeGetTag(String tag) {
-        if (tags == null)
-            return null;
-        else
-            return tags.get(tag);
+        return tags.get(tag);
     }
 
-    /** {@inheritDoc} */
     @Override
+    @Deprecated
     public ByteString getTag(String tag) {
         ByteString b = maybeGetTag(tag);
         if (b == null)
@@ -51,22 +48,18 @@ public class BaseTaggableObject implements TaggableObject {
         return b;
     }
 
-    /** {@inheritDoc} */
     @Override
+    @Deprecated
     public synchronized void setTag(String tag, ByteString value) {
-        checkNotNull(tag);
-        checkNotNull(value);
-        if (tags == null)
-            tags = new HashMap<>();
+        // HashMap allows null keys and values, but we don't
+        Objects.requireNonNull(tag);
+        Objects.requireNonNull(value);
         tags.put(tag, value);
     }
 
-    /** {@inheritDoc} */
     @Override
+    @Deprecated
     public synchronized Map<String, ByteString> getTags() {
-        if (tags != null)
-            return Maps.newHashMap(tags);
-        else
-            return Maps.newHashMap();
+        return new HashMap<>(tags);
     }
 }

@@ -16,19 +16,24 @@
 
 package org.bitcoinj.net;
 
-import com.google.common.collect.Lists;
+import org.bitcoinj.base.internal.TimeUtils;
 import org.bitcoinj.core.BloomFilter;
 import org.bitcoinj.core.PeerFilterProvider;
-import com.google.common.collect.ImmutableList;
+import org.bitcoinj.core.PeerGroup;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Random;
 
 // This code is unit tested by the PeerGroup tests.
 
 /**
- * <p>A reusable object that will calculate, given a list of {@link org.bitcoinj.core.PeerFilterProvider}s, a merged
- * {@link org.bitcoinj.core.BloomFilter} and earliest key time for all of them.
- * Used by the {@link org.bitcoinj.core.PeerGroup} class internally.</p>
+ * <p>A reusable object that will calculate, given a list of {@link PeerFilterProvider}s, a merged
+ * {@link BloomFilter} and earliest key time for all of them.
+ * Used by the {@link PeerGroup} class internally.</p>
  *
  * <p>Thread safety: threading here can be complicated. Each filter provider is given a begin event, which may acquire
  * a lock (and is guaranteed to receive an end event). This class is mostly thread unsafe and is meant to be used from a
@@ -39,8 +44,9 @@ import java.util.LinkedList;
  */
 public class FilterMerger {
     // We use a constant tweak to avoid giving up privacy when we regenerate our filter with new keys
-    private final long bloomFilterTweak = (long) (Math.random() * Long.MAX_VALUE);
+    private final int bloomFilterTweak = new Random().nextInt();
 
+    // TODO: Make final after deprecated setBloomFilterFPRate() method is removed
     private volatile double vBloomFilterFPRate;
     private int lastBloomFilterElementCount;
     private BloomFilter lastFilter;
@@ -51,12 +57,13 @@ public class FilterMerger {
 
     public static class Result {
         public BloomFilter filter;
-        public long earliestKeyTimeSecs;
+        public Instant earliestKeyTime;
         public boolean changed;
     }
 
-    public Result calculate(ImmutableList<PeerFilterProvider> providers) {
-        LinkedList<PeerFilterProvider> begunProviders = Lists.newLinkedList();
+    public Result calculate(List<PeerFilterProvider> providerList) {
+        List<PeerFilterProvider> providers = Collections.unmodifiableList(providerList);
+        LinkedList<PeerFilterProvider> begunProviders = new LinkedList<>();
         try {
             // All providers must be in a consistent, unchanging state because the filter is a merged one that's
             // large enough for all providers elements: if a provider were to get more elements in the middle of the
@@ -67,13 +74,11 @@ public class FilterMerger {
                 begunProviders.add(provider);
             }
             Result result = new Result();
-            result.earliestKeyTimeSecs = Long.MAX_VALUE;
+            result.earliestKeyTime = Instant.MAX;
             int elements = 0;
-            boolean requiresUpdateAll = false;
             for (PeerFilterProvider p : providers) {
-                result.earliestKeyTimeSecs = Math.min(result.earliestKeyTimeSecs, p.getEarliestKeyCreationTime());
+                result.earliestKeyTime = TimeUtils.earlier(result.earliestKeyTime, p.earliestKeyCreationTime());
                 elements += p.getBloomFilterElementCount();
-                requiresUpdateAll = requiresUpdateAll || p.isRequiringUpdateAllBloomFilter();
             }
 
             if (elements > 0) {
@@ -82,10 +87,10 @@ public class FilterMerger {
                 // The constant 100 here is somewhat arbitrary, but makes sense for small to medium wallets -
                 // it will likely mean we never need to create a filter with different parameters.
                 lastBloomFilterElementCount = elements > lastBloomFilterElementCount ? elements + 100 : lastBloomFilterElementCount;
-                BloomFilter.BloomUpdate bloomFlags =
-                        requiresUpdateAll ? BloomFilter.BloomUpdate.UPDATE_ALL : BloomFilter.BloomUpdate.UPDATE_P2PUBKEY_ONLY;
                 double fpRate = vBloomFilterFPRate;
-                BloomFilter filter = new BloomFilter(lastBloomFilterElementCount, fpRate, bloomFilterTweak, bloomFlags);
+                // We now always use UPDATE_ALL because with segwit there is hardly any wallet that can do without.
+                BloomFilter filter = new BloomFilter(lastBloomFilterElementCount, fpRate, bloomFilterTweak,
+                        BloomFilter.BloomUpdate.UPDATE_ALL);
                 for (PeerFilterProvider p : providers)
                     filter.merge(p.getBloomFilter(lastBloomFilterElementCount, fpRate, bloomFilterTweak));
 
@@ -95,7 +100,7 @@ public class FilterMerger {
             // Now adjust the earliest key time backwards by a week to handle the case of clock drift. This can occur
             // both in block header timestamps and if the users clock was out of sync when the key was first created
             // (to within a small amount of tolerance).
-            result.earliestKeyTimeSecs -= 86400 * 7;
+            result.earliestKeyTime = result.earliestKeyTime.minus(7, ChronoUnit.DAYS);
             return result;
         } finally {
             for (PeerFilterProvider provider : begunProviders) {
@@ -104,6 +109,7 @@ public class FilterMerger {
         }
     }
 
+    @Deprecated
     public void setBloomFilterFPRate(double bloomFilterFPRate) {
         this.vBloomFilterFPRate = bloomFilterFPRate;
     }

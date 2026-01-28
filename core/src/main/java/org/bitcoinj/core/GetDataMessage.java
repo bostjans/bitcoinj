@@ -1,5 +1,6 @@
 /*
  * Copyright 2011 Google Inc.
+ * Copyright 2019 Andreas Schildbach
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,46 +17,49 @@
 
 package org.bitcoinj.core;
 
+import org.bitcoinj.base.Sha256Hash;
+
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * <p>Represents the "getdata" P2P network message, which requests the contents of blocks or transactions given their
  * hashes.</p>
- * 
- * <p>Instances of this class are not safe for use by multiple threads.</p>
+ *
+ * <p>Instances of this class -- that use deprecated methods -- are not safe for use by multiple threads.</p>
  */
 public class GetDataMessage extends ListMessage {
-
-    public GetDataMessage(NetworkParameters params, byte[] payloadBytes) throws ProtocolException {
-        super(params, payloadBytes);
-    }
-
     /**
-     * Deserializes a 'getdata' message.
-     * @param params NetworkParameters object.
-     * @param payload Bitcoin protocol formatted byte array containing message content.
-     * @param serializer the serializer to use for this message.
-     * @param length The length of message if known.  Usually this is provided when deserializing of the wire
-     * as the length will be provided as part of the header.  If unknown then set to Message.UNKNOWN_LENGTH
-     * @throws ProtocolException
+     * Deserialize this message from a given payload.
+     *
+     * @param payload payload to deserialize from
+     * @return read message
+     * @throws BufferUnderflowException if the read message extends beyond the remaining bytes of the payload
      */
-    public GetDataMessage(NetworkParameters params, byte[] payload, MessageSerializer serializer, int length)
-            throws ProtocolException {
-        super(params, payload, serializer, length);
+    public static GetDataMessage read(ByteBuffer payload) throws BufferUnderflowException, ProtocolException {
+        return new GetDataMessage(readItems(payload));
     }
 
-    public GetDataMessage(NetworkParameters params) {
-        super(params);
+    GetDataMessage(List<InventoryItem> items) {
+        super(items);
     }
 
-    public void addTransaction(Sha256Hash hash) {
-        addItem(new InventoryItem(InventoryItem.Type.Transaction, hash));
+    public static GetDataMessage ofBlock(Sha256Hash blockHash, boolean includeWitness) {
+        return new GetDataMessage(Collections.singletonList(
+                    new InventoryItem(includeWitness
+                            ? InventoryItem.Type.WITNESS_BLOCK
+                            : InventoryItem.Type.BLOCK,
+                            blockHash)));
     }
 
-    public void addBlock(Sha256Hash hash) {
-        addItem(new InventoryItem(InventoryItem.Type.Block, hash));
-    }
-
-    public void addFilteredBlock(Sha256Hash hash) {
-        addItem(new InventoryItem(InventoryItem.Type.FilteredBlock, hash));
+    public static GetDataMessage ofTransaction(Sha256Hash txId, boolean includeWitness) {
+        return new GetDataMessage(Collections.singletonList(
+                new InventoryItem(includeWitness
+                        ? InventoryItem.Type.WITNESS_TRANSACTION
+                        : InventoryItem.Type.TRANSACTION,
+                        txId)));
     }
 
     public Sha256Hash getHashOf(int i) {

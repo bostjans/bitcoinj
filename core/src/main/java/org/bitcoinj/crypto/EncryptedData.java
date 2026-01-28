@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://opensource.org/licenses/mit-license.php
+ *    https://opensource.org/license/mit/
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,8 +16,8 @@
 
 package org.bitcoinj.crypto;
 
-import com.google.common.base.Objects;
 import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * <p>An instance of EncryptedData is a holder for an initialization vector and encrypted bytes. It is typically
@@ -45,7 +45,7 @@ public final class EncryptedData {
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(Arrays.hashCode(encryptedBytes), Arrays.hashCode(initialisationVector));
+        return Objects.hash(Arrays.hashCode(encryptedBytes), Arrays.hashCode(initialisationVector));
     }
 
     @Override

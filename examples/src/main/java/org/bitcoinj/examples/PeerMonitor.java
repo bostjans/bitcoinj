@@ -17,39 +17,54 @@
 
 package org.bitcoinj.examples;
 
-import org.bitcoinj.core.listeners.PeerConnectedEventListener;
-import org.bitcoinj.core.listeners.PeerDisconnectedEventListener;
-import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.base.Coin;
+import org.bitcoinj.base.Network;
+import org.bitcoinj.core.AddressMessage;
 import org.bitcoinj.core.Peer;
+import org.bitcoinj.core.PeerAddress;
 import org.bitcoinj.core.PeerGroup;
 import org.bitcoinj.net.discovery.DnsDiscovery;
-import org.bitcoinj.params.MainNetParams;
 import org.bitcoinj.utils.BriefLogFormatter;
-import com.google.common.collect.Lists;
 
-import javax.swing.*;
-import javax.swing.event.ChangeEvent;
-import javax.swing.event.ChangeListener;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
+import javax.swing.JTable;
+import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableCellRenderer;
-import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import javax.swing.table.TableColumnModel;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Font;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-import java.util.HashMap;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Shows connected peers in a table view, so you can watch as they come and go.
  */
 public class PeerMonitor {
-    private NetworkParameters params;
     private PeerGroup peerGroup;
+    private final Executor reverseDnsThreadPool = Executors.newCachedThreadPool();
     private PeerTableModel peerTableModel;
     private PeerTableRenderer peerTableRenderer;
 
-    private final HashMap<Peer, String> reverseDnsLookups = new HashMap<Peer, String>();
+    private final ConcurrentHashMap<Peer, String> reverseDnsLookups = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Peer, AddressMessage> addressMessages = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws Exception {
         BriefLogFormatter.init();
@@ -63,51 +78,57 @@ public class PeerMonitor {
     }
 
     private void setupNetwork() {
-        params = MainNetParams.get();
-        peerGroup = new PeerGroup(params, null /* no chain */);
+        Network network = BitcoinNetwork.MAINNET;
+        peerGroup = new PeerGroup(network, null /* no chain */);
         peerGroup.setUserAgent("PeerMonitor", "1.0");
         peerGroup.setMaxConnections(4);
-        peerGroup.addPeerDiscovery(new DnsDiscovery(params));
-        peerGroup.addConnectedEventListener(new PeerConnectedEventListener() {
-            @Override
-            public void onPeerConnected(final Peer peer, int peerCount) {
-                refreshUI();
-                lookupReverseDNS(peer);
-            }
+        peerGroup.addPeerDiscovery(new DnsDiscovery(network));
+        peerGroup.addConnectedEventListener((peer, peerCount) -> {
+            refreshUI();
+            lookupReverseDNS(peer);
+            getAddr(peer);
         });
-        peerGroup.addDisconnectedEventListener(new PeerDisconnectedEventListener() {
-            @Override
-            public void onPeerDisconnected(final Peer peer, int peerCount) {
-                refreshUI();
-                synchronized (reverseDnsLookups) {
-                    reverseDnsLookups.remove(peer);
-                }
-            }
+        peerGroup.addDisconnectedEventListener((peer, peerCount) -> {
+            refreshUI();
+            reverseDnsLookups.remove(peer);
+            addressMessages.remove(peer);
         });
     }
 
     private void lookupReverseDNS(final Peer peer) {
-        new Thread() {
-            @Override
-            public void run() {
-                // This can take a looooong time.
-                String reverseDns = peer.getAddress().getAddr().getCanonicalHostName();
-                synchronized (reverseDnsLookups) {
-                    reverseDnsLookups.put(peer, reverseDns);
+        getHostName(peer.getAddress()).thenAccept(reverseDns -> {
+            reverseDnsLookups.put(peer, reverseDns);
+            refreshUI();
+        });
+    }
+
+    private void getAddr(final Peer peer) {
+        peer.getAddr()
+            .orTimeout(15, TimeUnit.SECONDS)
+            .whenComplete((addressMessage, e) -> {
+                if (addressMessage != null) {
+                    addressMessages.put(peer, addressMessage);
+                    refreshUI();
+                } else {
+                    e.printStackTrace();
                 }
-                refreshUI();
-            }
-        }.start();
+            });
+    }
+
+    private CompletableFuture<String> getHostName(final PeerAddress peerAddress) {
+        if (peerAddress.getAddr() != null) {
+            // This can take a looooong time.
+            return CompletableFuture.supplyAsync(peerAddress.getAddr()::getCanonicalHostName, reverseDnsThreadPool);
+        } else if (peerAddress.getHostname() != null ){
+            return CompletableFuture.completedFuture(peerAddress.getHostname());
+        }  else {
+            return CompletableFuture.completedFuture("-unavailable-");
+        }
     }
 
     private void refreshUI() {
         // Tell the Swing UI thread to redraw the peers table.
-        SwingUtilities.invokeLater(new Runnable() {
-            @Override
-            public void run() {
-                peerTableModel.updateFromPeerGroup();
-            }
-        });
+        SwingUtilities.invokeLater(() -> peerTableModel.updateFromPeerGroup());
     }
 
     private void setupGUI() {
@@ -126,12 +147,7 @@ public class PeerMonitor {
         JPanel panel = new JPanel();
         JLabel instructions = new JLabel("Number of peers to connect to: ");
         final SpinnerNumberModel spinnerModel = new SpinnerNumberModel(4, 0, 100, 1);
-        spinnerModel.addChangeListener(new ChangeListener() {
-            @Override
-            public void stateChanged(ChangeEvent changeEvent) {
-                peerGroup.setMaxConnections(spinnerModel.getNumber().intValue());
-            }
-        });
+        spinnerModel.addChangeListener(changeEvent -> peerGroup.setMaxConnections(spinnerModel.getNumber().intValue()));
         JSpinner numPeersSpinner = new JSpinner(spinnerModel);
         panel.add(instructions);
         panel.add(numPeersSpinner);
@@ -144,21 +160,20 @@ public class PeerMonitor {
         peerTable.setDefaultRenderer(String.class, peerTableRenderer);
         peerTable.setDefaultRenderer(Integer.class, peerTableRenderer);
         peerTable.setDefaultRenderer(Long.class, peerTableRenderer);
-        peerTable.getColumnModel().getColumn(0).setPreferredWidth(300);
+        TableColumnModel columnModel = peerTable.getColumnModel();
+        columnModel.getColumn(PeerTableModel.IP_ADDRESS).setPreferredWidth(300);
+        columnModel.getColumn(PeerTableModel.USER_AGENT).setPreferredWidth(150);
+        columnModel.getColumn(PeerTableModel.FEE_FILTER).setPreferredWidth(150);
+        columnModel.getColumn(PeerTableModel.ADDRESSES).setPreferredWidth(400);
 
         JScrollPane scrollPane = new JScrollPane(peerTable);
         window.getContentPane().add(scrollPane, BorderLayout.CENTER);
         window.pack();
-        window.setSize(720, 480);
+        window.setSize(1280, 768);
         window.setVisible(true);
 
         // Refresh the UI every half second to get the latest ping times. The event handler runs in the UI thread.
-        new Timer(1000, new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent actionEvent) {
-                peerTableModel.updateFromPeerGroup();
-            }
-        }).start();
+        new Timer(1000, actionEvent -> peerTableModel.updateFromPeerGroup()).start();
     }
 
     private class PeerTableModel extends AbstractTableModel {
@@ -166,11 +181,13 @@ public class PeerMonitor {
         public static final int PROTOCOL_VERSION = 1;
         public static final int USER_AGENT = 2;
         public static final int CHAIN_HEIGHT = 3;
-        public static final int PING_TIME = 4;
-        public static final int LAST_PING_TIME = 5;
+        public static final int FEE_FILTER = 4;
+        public static final int PING_TIME = 5;
+        public static final int LAST_PING_TIME = 6;
+        public static final int ADDRESSES = 7;
 
-        public List<Peer> connectedPeers = Lists.newArrayList();
-        public List<Peer> pendingPeers = Lists.newArrayList();
+        public List<Peer> connectedPeers = new ArrayList<>();
+        public List<Peer> pendingPeers = new ArrayList<>();
 
         public void updateFromPeerGroup() {
             connectedPeers = peerGroup.getConnectedPeers();
@@ -190,15 +207,17 @@ public class PeerMonitor {
                 case PROTOCOL_VERSION: return "Protocol version";
                 case USER_AGENT: return "User Agent";
                 case CHAIN_HEIGHT: return "Chain height";
+                case FEE_FILTER: return "Fee filter (per kB)";
                 case PING_TIME: return "Average ping";
                 case LAST_PING_TIME: return "Last ping";
+                case ADDRESSES: return "Peer addresses";
                 default: throw new RuntimeException();
             }
         }
 
         @Override
         public int getColumnCount() {
-            return 6;
+            return 8;
         }
 
         @Override
@@ -243,23 +262,30 @@ public class PeerMonitor {
                     return peer.getPeerVersionMessage().subVer;
                 case CHAIN_HEIGHT:
                     return peer.getBestHeight();
+                case FEE_FILTER:
+                    Coin feeFilter = peer.getFeeFilter();
+                    return feeFilter != null ? feeFilter.toFriendlyString() : "";
                 case PING_TIME:
+                    return peer.pingInterval().map(Duration::toMillis).orElse(0L);
                 case LAST_PING_TIME:
-                    return col == PING_TIME ? peer.getPingTime() : peer.getLastPingTime();
+                    return peer.lastPingInterval().map(Duration::toMillis).orElse(0L);
+                case ADDRESSES:
+                    return getAddressesForPeer(peer);
 
                 default: throw new RuntimeException();
             }
         }
 
-        private Object getAddressForPeer(Peer peer) {
-            String s;
-            synchronized (reverseDnsLookups) {
-                s = reverseDnsLookups.get(peer);
-            }
-            if (s != null)
-                return s;
-            else
-                return peer.getAddress().getAddr().getHostAddress();
+        private String getAddressForPeer(Peer peer) {
+            String s = reverseDnsLookups.get(peer);
+            return (s != null)
+                ? s
+                : peer.getAddress().getAddr().getHostAddress();
+        }
+
+        private String getAddressesForPeer(Peer peer) {
+            AddressMessage addressMessage = addressMessages.get(peer);
+            return addressMessage != null ? addressMessage.toString() : "";
         }
     }
 

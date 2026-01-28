@@ -17,19 +17,19 @@
 package org.bitcoinj.signers;
 
 import org.bitcoinj.core.Transaction;
-import org.bitcoinj.crypto.ChildNumber;
+import org.bitcoinj.crypto.HDPath;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.wallet.KeyBag;
+import org.bitcoinj.wallet.Wallet;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
  * <p>Implementations of this interface are intended to sign inputs of the given transaction. Given transaction may already
  * be partially signed or somehow altered by other signers.</p>
  * <p>To make use of the signer, you need to add it into the  wallet by
- * calling {@link org.bitcoinj.wallet.Wallet#addTransactionSigner(TransactionSigner)}. Signer will be serialized
+ * calling {@link Wallet#addTransactionSigner(TransactionSigner)}. Signer will be serialized
  * along with the wallet data. In order for a wallet to recreate signer after deserialization, each signer
  * should have no-args constructor</p>
  */
@@ -50,7 +50,7 @@ public interface TransactionSigner {
          * same derivation path and we need to store only one key path per input. As TransactionInput is mutable, inputs
          * are identified by their scriptPubKeys (keys in this map).
          */
-        public final Map<Script, List<ChildNumber>> keyPaths;
+        public final Map<Script, HDPath.HDPartialPath> keyPaths;
 
         public ProposedTransaction(Transaction partialTx) {
             this.partialTx = partialTx;
@@ -65,16 +65,6 @@ public interface TransactionSigner {
      * Returns true if this signer is ready to be used.
      */
     boolean isReady();
-
-    /**
-     * Returns byte array of data representing state of this signer. It's used to serialize/deserialize this signer
-     */
-    byte[] serialize();
-
-    /**
-     * Uses given byte array of data to reconstruct internal state of this signer
-     */
-    void deserialize(byte[] data);
 
     /**
      * Signs given transaction's inputs.

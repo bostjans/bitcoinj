@@ -1,8 +1,16 @@
 target
+build
+.gradle
+gradlew
+gradlew.bat
+gradle/wrapper
+.kotlin/
 .project
 .classpath
 .settings
+bin/
 .idea
 *.iml
+out/
 *.chain
 *.spvchain

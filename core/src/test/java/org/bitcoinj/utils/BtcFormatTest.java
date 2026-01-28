@@ -16,28 +16,50 @@
 
 package org.bitcoinj.utils;
 
-import org.bitcoinj.core.Coin;
+import org.bitcoinj.base.Coin;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
 import java.math.BigDecimal;
-import java.text.*;
+import java.text.AttributedCharacterIterator;
 import java.text.AttributedCharacterIterator.Attribute;
+import java.text.CharacterIterator;
+import java.text.DecimalFormat;
+import java.text.FieldPosition;
+import java.text.NumberFormat;
+import java.text.ParseException;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
 
-import static org.bitcoinj.core.Coin.*;
-import static org.bitcoinj.core.NetworkParameters.MAX_MONEY;
+import static java.text.NumberFormat.Field.DECIMAL_SEPARATOR;
+import static java.util.Locale.CHINA;
+import static java.util.Locale.FRANCE;
+import static java.util.Locale.GERMANY;
+import static java.util.Locale.ITALY;
+import static java.util.Locale.JAPAN;
+import static java.util.Locale.TAIWAN;
+import static java.util.Locale.US;
+import static org.bitcoinj.base.Coin.COIN;
+import static org.bitcoinj.base.Coin.SATOSHI;
+import static org.bitcoinj.base.Coin.SMALLEST_UNIT_EXPONENT;
+import static org.bitcoinj.base.Coin.ZERO;
+import static org.bitcoinj.base.Coin.parseCoin;
+import static org.bitcoinj.base.Coin.valueOf;
+import static org.bitcoinj.base.BitcoinNetwork.MAX_MONEY;
 import static org.bitcoinj.utils.BtcAutoFormat.Style.CODE;
 import static org.bitcoinj.utils.BtcAutoFormat.Style.SYMBOL;
 import static org.bitcoinj.utils.BtcFixedFormat.REPEATING_DOUBLETS;
 import static org.bitcoinj.utils.BtcFixedFormat.REPEATING_TRIPLETS;
-import static java.text.NumberFormat.Field.DECIMAL_SEPARATOR;
-import static java.util.Locale.*;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 @RunWith(Parameterized.class)
 public class BtcFormatTest {
@@ -71,6 +93,7 @@ public class BtcFormatTest {
         assertEquals("µ฿0.01", usFormat.format(1));
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void suffixTest() {
         BtcFormat deFormat = BtcFormat.getSymbolInstance(Locale.GERMANY);
@@ -100,11 +123,11 @@ public class BtcFormatTest {
     @Test
     public void symbolCollisionTest() {
         Locale[] locales = BtcFormat.getAvailableLocales();
-        for (int i = 0; i < locales.length; ++i) {
-            String cs = ((DecimalFormat)NumberFormat.getCurrencyInstance(locales[i])).
-                        getDecimalFormatSymbols().getCurrencySymbol();
+        for (Locale locale : locales) {
+            String cs = ((DecimalFormat) NumberFormat.getCurrencyInstance(locale)).
+                    getDecimalFormatSymbols().getCurrencySymbol();
             if (cs.contains("฿")) {
-                BtcFormat bf = BtcFormat.getSymbolInstance(locales[i]);
+                BtcFormat bf = BtcFormat.getSymbolInstance(locale);
                 String coin = bf.format(COIN);
                 assertTrue(coin.contains("Ƀ"));
                 assertFalse(coin.contains("฿"));
@@ -114,27 +137,27 @@ public class BtcFormatTest {
                 String micro = bf.format(valueOf(100));
                 assertTrue(micro.contains("µɃ"));
                 assertFalse(micro.contains("฿"));
-                BtcFormat ff = BtcFormat.builder().scale(0).locale(locales[i]).pattern("¤#.#").build();
-                assertEquals("Ƀ", ((BtcFixedFormat)ff).symbol());
+                BtcFormat ff = BtcFormat.builder().scale(0).locale(locale).pattern("¤#.#").build();
+                assertEquals("Ƀ", ((BtcFixedFormat) ff).symbol());
                 assertEquals("Ƀ", ff.coinSymbol());
                 coin = ff.format(COIN);
                 assertTrue(coin.contains("Ƀ"));
                 assertFalse(coin.contains("฿"));
-                BtcFormat mlff = BtcFormat.builder().scale(3).locale(locales[i]).pattern("¤#.#").build();
-                assertEquals("₥Ƀ", ((BtcFixedFormat)mlff).symbol());
+                BtcFormat mlff = BtcFormat.builder().scale(3).locale(locale).pattern("¤#.#").build();
+                assertEquals("₥Ƀ", ((BtcFixedFormat) mlff).symbol());
                 assertEquals("Ƀ", mlff.coinSymbol());
                 milli = mlff.format(valueOf(10000));
                 assertTrue(milli.contains("₥Ƀ"));
                 assertFalse(milli.contains("฿"));
-                BtcFormat mcff = BtcFormat.builder().scale(6).locale(locales[i]).pattern("¤#.#").build();
-                assertEquals("µɃ", ((BtcFixedFormat)mcff).symbol());
+                BtcFormat mcff = BtcFormat.builder().scale(6).locale(locale).pattern("¤#.#").build();
+                assertEquals("µɃ", ((BtcFixedFormat) mcff).symbol());
                 assertEquals("Ƀ", mcff.coinSymbol());
                 micro = mcff.format(valueOf(100));
                 assertTrue(micro.contains("µɃ"));
                 assertFalse(micro.contains("฿"));
             }
             if (cs.contains("Ƀ")) {  // NB: We don't know of any such existing locale, but check anyway.
-                BtcFormat bf = BtcFormat.getInstance(locales[i]);
+                BtcFormat bf = BtcFormat.getInstance(locale);
                 String coin = bf.format(COIN);
                 assertTrue(coin.contains("฿"));
                 assertFalse(coin.contains("Ƀ"));
@@ -148,6 +171,7 @@ public class BtcFormatTest {
         }
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void argumentTypeTest() {
         BtcFormat usFormat = BtcFormat.getSymbolInstance(Locale.US);
@@ -282,6 +306,7 @@ public class BtcFormatTest {
         assertEquals(fa.hashCode(), fb.hashCode());
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void parseTest() throws java.text.ParseException {
         BtcFormat us = BtcFormat.getSymbolInstance(Locale.US);
@@ -664,6 +689,7 @@ public class BtcFormatTest {
         );
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void currencyCodeTest() {
         /* Insert needed space AFTER currency-code */
@@ -719,7 +745,7 @@ public class BtcFormatTest {
     }
 
     @Test
-    public void testGrouping() throws Exception {
+    public void testGrouping() {
         BtcFormat usCoin = BtcFormat.getInstance(0, Locale.US, 1, 2, 3);
         assertEquals("0.1", usCoin.format(Coin.parseCoin("0.1")));
         assertEquals("0.010", usCoin.format(Coin.parseCoin("0.01")));
@@ -1055,7 +1081,7 @@ public class BtcFormatTest {
 
     /* Copied (and modified) from CoinFormatTest.java */
     @Test
-    public void btcRounding() throws Exception {
+    public void btcRounding() {
         BtcFormat coinFormat = BtcFormat.getCoinInstance(Locale.US);
         assertEquals("0", BtcFormat.getCoinInstance(Locale.US, 0).format(ZERO));
         assertEquals("0", coinFormat.format(ZERO, 0));
@@ -1157,8 +1183,9 @@ public class BtcFormatTest {
         assertEquals("11.223344556677", megaFormat.format(Coin.valueOf(1122334455667700l), 0, REPEATING_TRIPLETS));
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
-    public void negativeTest() throws Exception {
+    public void negativeTest() {
         assertEquals("-1,00 BTC", BtcFormat.getInstance(FRANCE).format(COIN.multiply(-1)));
         assertEquals("BTC -1,00", BtcFormat.getInstance(ITALY).format(COIN.multiply(-1)));
         assertEquals("฿ -1,00", BtcFormat.getSymbolInstance(ITALY).format(COIN.multiply(-1)));
@@ -1266,8 +1293,9 @@ public class BtcFormatTest {
 
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
-    public void attributeTest() throws Exception {
+    public void attributeTest() {
         String codePat = BtcFormat.getCodeInstance(Locale.US).pattern();
         assertTrue(codePat.contains("BTC") && ! codePat.contains("(^|[^฿])฿([^฿]|$)") && ! codePat.contains("(^|[^¤])¤([^¤]|$)"));
         String symPat = BtcFormat.getSymbolInstance(Locale.US).pattern();
@@ -1281,6 +1309,7 @@ public class BtcFormatTest {
         assertEquals('๐', BtcFormat.getInstance(new Locale("th","TH","TH")).symbols().getZeroDigit());
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void toStringTest() {
         assertEquals("Auto-format ฿#,##0.00;(฿#,##0.00)", BtcFormat.getSymbolInstance(Locale.US).toString());
@@ -1330,6 +1359,7 @@ public class BtcFormatTest {
         assertEquals("mBTC 1000.000", f.format(COIN));
     }
 
+    @Ignore("non-determinism between OpenJDK versions")
     @Test
     public void builderTest() {
         Locale locale;

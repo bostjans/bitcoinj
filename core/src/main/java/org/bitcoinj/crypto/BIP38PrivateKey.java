@@ -16,33 +16,29 @@
 
 package org.bitcoinj.crypto;
 
-import org.bitcoinj.core.*;
-import com.google.common.base.Charsets;
-import com.google.common.base.Objects;
-import com.google.common.primitives.Bytes;
-import com.lambdaworks.crypto.SCrypt;
+import org.bitcoinj.base.Network;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.base.internal.ByteUtils;
+import org.bitcoinj.base.exceptions.AddressFormatException;
+import org.bitcoinj.base.Base58;
+import org.bitcoinj.base.Sha256Hash;
+import org.bouncycastle.crypto.generators.SCrypt;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
-
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.text.Normalizer;
 import java.util.Arrays;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
+import static org.bitcoinj.base.internal.Preconditions.checkState;
 
 /**
  * Implementation of <a href="https://github.com/bitcoin/bips/blob/master/bip-0038.mediawiki">BIP 38</a>
  * passphrase-protected private keys. Currently, only decryption is supported.
  */
-public class BIP38PrivateKey extends VersionedChecksummedBytes {
-
-    public transient NetworkParameters params;
+public class BIP38PrivateKey extends EncodedPrivateKey {
     public final boolean ecMultiply;
     public final boolean compressed;
     public final boolean hasLotAndSequence;
@@ -54,28 +50,24 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
 
     /**
      * Construct a password-protected private key from its Base58 representation.
-     * @param params
-     *            The network parameters of the chain that the key is for.
+     * @param network
+     *            The network of the chain that the key is for.
      * @param base58
      *            The textual form of the password-protected private key.
      * @throws AddressFormatException
      *             if the given base58 doesn't parse or the checksum is invalid
      */
-    public static BIP38PrivateKey fromBase58(NetworkParameters params, String base58) throws AddressFormatException {
-        return new BIP38PrivateKey(params, base58);
-    }
+    public static BIP38PrivateKey fromBase58(Network network, String base58) throws AddressFormatException {
+        byte[] versionAndDataBytes = Base58.decodeChecked(base58);
+        int version = versionAndDataBytes[0] & 0xFF;
+        byte[] bytes = Arrays.copyOfRange(versionAndDataBytes, 1, versionAndDataBytes.length);
 
-    /** @deprecated Use {@link #fromBase58(NetworkParameters, String)} */
-    @Deprecated
-    public BIP38PrivateKey(NetworkParameters params, String encoded) throws AddressFormatException {
-        super(encoded);
-        this.params = checkNotNull(params);
         if (version != 0x01)
-            throw new AddressFormatException("Mismatched version number: " + version);
+            throw new AddressFormatException.InvalidPrefix("Mismatched version number: " + version);
         if (bytes.length != 38)
-            throw new AddressFormatException("Wrong number of bytes, excluding version byte: " + bytes.length);
-        hasLotAndSequence = (bytes[1] & 0x04) != 0; // bit 2
-        compressed = (bytes[1] & 0x20) != 0; // bit 5
+            throw new AddressFormatException.InvalidDataLength("Wrong number of bytes: " + bytes.length);
+        boolean hasLotAndSequence = (bytes[1] & 0x04) != 0; // bit 2
+        boolean compressed = (bytes[1] & 0x20) != 0; // bit 5
         if ((bytes[1] & 0x01) != 0) // bit 0
             throw new AddressFormatException("Bit 0x01 reserved for future use.");
         if ((bytes[1] & 0x02) != 0) // bit 1
@@ -85,6 +77,7 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
         if ((bytes[1] & 0x10) != 0) // bit 4
             throw new AddressFormatException("Bit 0x10 reserved for future use.");
         final int byte0 = bytes[0] & 0xff;
+        final boolean ecMultiply;
         if (byte0 == 0x42) {
             // Non-EC-multiplied key
             if ((bytes[1] & 0xc0) != 0xc0) // bits 6+7
@@ -100,14 +93,34 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
         } else {
             throw new AddressFormatException("Second byte must by 0x42 or 0x43.");
         }
-        addressHash = Arrays.copyOfRange(bytes, 2, 6);
-        content = Arrays.copyOfRange(bytes, 6, 38);
+        byte[] addressHash = Arrays.copyOfRange(bytes, 2, 6);
+        byte[] content = Arrays.copyOfRange(bytes, 6, 38);
+        return new BIP38PrivateKey(network, bytes, ecMultiply, compressed, hasLotAndSequence, addressHash, content);
+    }
+
+    private BIP38PrivateKey(Network network, byte[] bytes, boolean ecMultiply, boolean compressed,
+            boolean hasLotAndSequence, byte[] addressHash, byte[] content) throws AddressFormatException {
+        super(network, bytes);
+        this.ecMultiply = ecMultiply;
+        this.compressed = compressed;
+        this.hasLotAndSequence = hasLotAndSequence;
+        this.addressHash = addressHash;
+        this.content = content;
+    }
+
+    /**
+     * Returns the base58-encoded textual form, including version and checksum bytes.
+     * 
+     * @return textual form
+     */
+    public String toBase58() {
+        return Base58.encodeChecked(1, bytes);
     }
 
     public ECKey decrypt(String passphrase) throws BadPassphraseException {
         String normalizedPassphrase = Normalizer.normalize(passphrase, Normalizer.Form.NFC);
         ECKey key = ecMultiply ? decryptEC(normalizedPassphrase) : decryptNoEC(normalizedPassphrase);
-        Sha256Hash hash = Sha256Hash.twiceOf(key.toAddress(params).toString().getBytes(Charsets.US_ASCII));
+        Sha256Hash hash = Sha256Hash.twiceOf(key.toAddress(ScriptType.P2PKH, network).toString().getBytes(StandardCharsets.US_ASCII));
         byte[] actualAddressHash = Arrays.copyOfRange(hash.getBytes(), 0, 4);
         if (!Arrays.equals(actualAddressHash, addressHash))
             throw new BadPassphraseException();
@@ -116,11 +129,10 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
 
     private ECKey decryptNoEC(String normalizedPassphrase) {
         try {
-            byte[] derived = SCrypt.scrypt(normalizedPassphrase.getBytes(Charsets.UTF_8), addressHash, 16384, 8, 8, 64);
+            byte[] derived = SCrypt.generate(normalizedPassphrase.getBytes(StandardCharsets.UTF_8), addressHash, 16384, 8, 8, 64);
             byte[] key = Arrays.copyOfRange(derived, 32, 64);
             SecretKeySpec keyspec = new SecretKeySpec(key, "AES");
 
-            DRMWorkaround.maybeDisableExportControls();
             Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
 
             cipher.init(Cipher.DECRYPT_MODE, keyspec);
@@ -138,18 +150,18 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
             byte[] ownerEntropy = Arrays.copyOfRange(content, 0, 8);
             byte[] ownerSalt = hasLotAndSequence ? Arrays.copyOfRange(ownerEntropy, 0, 4) : ownerEntropy;
 
-            byte[] passFactorBytes = SCrypt.scrypt(normalizedPassphrase.getBytes(Charsets.UTF_8), ownerSalt, 16384, 8, 8, 32);
+            byte[] passFactorBytes = SCrypt.generate(normalizedPassphrase.getBytes(StandardCharsets.UTF_8), ownerSalt, 16384, 8, 8, 32);
             if (hasLotAndSequence) {
-                byte[] hashBytes = Bytes.concat(passFactorBytes, ownerEntropy);
+                byte[] hashBytes = ByteUtils.concat(passFactorBytes, ownerEntropy);
                 checkState(hashBytes.length == 40);
                 passFactorBytes = Sha256Hash.hashTwice(hashBytes);
             }
-            BigInteger passFactor = new BigInteger(1, passFactorBytes);
+            BigInteger passFactor = ByteUtils.bytesToBigInteger(passFactorBytes);
             ECKey k = ECKey.fromPrivate(passFactor, true);
 
-            byte[] salt = Bytes.concat(addressHash, ownerEntropy);
+            byte[] salt = ByteUtils.concat(addressHash, ownerEntropy);
             checkState(salt.length == 12);
-            byte[] derived = SCrypt.scrypt(k.getPubKey(), salt, 1024, 1, 1, 64);
+            byte[] derived = SCrypt.generate(k.getPubKey(), salt, 1024, 1, 1, 64);
             byte[] aeskey = Arrays.copyOfRange(derived, 32, 64);
 
             SecretKeySpec keyspec = new SecretKeySpec(aeskey, "AES");
@@ -162,15 +174,15 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
             for (int i = 0; i < 16; i++)
                 decrypted2[i] ^= derived[i + 16];
 
-            byte[] encrypted1 = Bytes.concat(Arrays.copyOfRange(content, 8, 16), Arrays.copyOfRange(decrypted2, 0, 8));
+            byte[] encrypted1 = ByteUtils.concat(Arrays.copyOfRange(content, 8, 16), Arrays.copyOfRange(decrypted2, 0, 8));
             byte[] decrypted1 = cipher.doFinal(encrypted1);
             checkState(decrypted1.length == 16);
             for (int i = 0; i < 16; i++)
                 decrypted1[i] ^= derived[i];
 
-            byte[] seed = Bytes.concat(decrypted1, Arrays.copyOfRange(decrypted2, 8, 16));
+            byte[] seed = ByteUtils.concat(decrypted1, Arrays.copyOfRange(decrypted2, 8, 16));
             checkState(seed.length == 24);
-            BigInteger seedFactor = new BigInteger(1, Sha256Hash.hashTwice(seed));
+            BigInteger seedFactor = ByteUtils.bytesToBigInteger(Sha256Hash.hashTwice(seed));
             checkState(passFactor.signum() >= 0);
             checkState(seedFactor.signum() >= 0);
             BigInteger priv = passFactor.multiply(seedFactor).mod(ECKey.CURVE.getN());
@@ -182,27 +194,7 @@ public class BIP38PrivateKey extends VersionedChecksummedBytes {
     }
 
     @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        BIP38PrivateKey other = (BIP38PrivateKey) o;
-        return super.equals(other) && Objects.equal(this.params, other.params);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hashCode(super.hashCode(), params);
-    }
-
-    // Java serialization
-
-    private void writeObject(ObjectOutputStream out) throws IOException {
-        out.defaultWriteObject();
-        out.writeUTF(params.getId());
-    }
-
-    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        params = checkNotNull(NetworkParameters.fromID(in.readUTF()));
+    public String toString() {
+        return toBase58();
     }
 }

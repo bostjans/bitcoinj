@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://opensource.org/licenses/mit-license.php
+ *    https://opensource.org/license/mit/
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,10 +16,7 @@
 
 package org.bitcoinj.crypto;
 
-import org.bitcoinj.wallet.Protos.Wallet.EncryptionType;
-import org.spongycastle.crypto.params.KeyParameter;
-
-import java.io.Serializable;
+import org.bitcoinj.protobuf.wallet.Protos.Wallet.EncryptionType;
 
 /**
  * <p>A KeyCrypter can be used to encrypt and decrypt a message. The sequence of events to encrypt and then decrypt
@@ -34,7 +31,7 @@ import java.io.Serializable;
  * <p>There can be different algorithms used for encryption/ decryption so the getUnderstoodEncryptionType is used
  * to determine whether any given KeyCrypter can understand the type of encrypted data you have.</p>
  */
-public interface KeyCrypter extends Serializable {
+public interface KeyCrypter {
 
     /**
      * Return the EncryptionType enum value which denotes the type of encryption/ decryption that this KeyCrypter
@@ -43,19 +40,19 @@ public interface KeyCrypter extends Serializable {
     EncryptionType getUnderstoodEncryptionType();
 
     /**
-     * Create a KeyParameter (which typically contains an AES key)
+     * Create an AESKey (which typically contains an AES key)
      * @param password
-     * @return KeyParameter The KeyParameter which typically contains the AES key to use for encrypting and decrypting
+     * @return AESKey which typically contains the AES key to use for encrypting and decrypting
      * @throws KeyCrypterException
      */
-    KeyParameter deriveKey(CharSequence password) throws KeyCrypterException;
+    AesKey deriveKey(CharSequence password) throws KeyCrypterException;
 
     /**
      * Decrypt the provided encrypted bytes, converting them into unencrypted bytes.
      *
      * @throws KeyCrypterException if decryption was unsuccessful.
      */
-    byte[] decrypt(EncryptedData encryptedBytesToDecode, KeyParameter aesKey) throws KeyCrypterException;
+    byte[] decrypt(EncryptedData encryptedBytesToDecode, AesKey aesKey) throws KeyCrypterException;
 
     /**
      * Encrypt the supplied bytes, converting them into ciphertext.
@@ -63,5 +60,5 @@ public interface KeyCrypter extends Serializable {
      * @return encryptedPrivateKey An encryptedPrivateKey containing the encrypted bytes and an initialisation vector.
      * @throws KeyCrypterException if encryption was unsuccessful
      */
-    EncryptedData encrypt(byte[] plainBytes, KeyParameter aesKey) throws KeyCrypterException;
+    EncryptedData encrypt(byte[] plainBytes, AesKey aesKey) throws KeyCrypterException;
 }

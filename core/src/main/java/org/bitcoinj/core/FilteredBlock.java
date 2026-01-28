@@ -1,6 +1,5 @@
 /*
- * Copyright 2012 Matt Corallo
- * Copyright 2015 Andreas Schildbach
+ * Copyright by the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +16,18 @@
 
 package org.bitcoinj.core;
 
-import com.google.common.base.Objects;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.*;
+import org.bitcoinj.base.Sha256Hash;
+import org.bitcoinj.base.internal.Buffers;
+
+import java.nio.BufferOverflowException;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * <p>A FilteredBlock is used to relay a block with its transactions filtered using a {@link BloomFilter}. It consists
@@ -28,50 +35,56 @@ import java.util.*;
  * 
  * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
-public class FilteredBlock extends Message {
-    private Block header;
+public class FilteredBlock implements Message {
+    private final Block header;
 
-    private PartialMerkleTree merkleTree;
+    private final PartialMerkleTree merkleTree;
     private List<Sha256Hash> cachedTransactionHashes = null;
     
     // A set of transactions whose hashes are a subset of getTransactionHashes()
     // These were relayed as a part of the filteredblock getdata, ie likely weren't previously received as loose transactions
-    private Map<Sha256Hash, Transaction> associatedTransactions = new HashMap<>();
-    
-    public FilteredBlock(NetworkParameters params, byte[] payloadBytes) throws ProtocolException {
-        super(params, payloadBytes, 0);
+    private final Map<Sha256Hash, Transaction> associatedTransactions = new HashMap<>();
+
+    /**
+     * Deserialize this message from a given payload.
+     *
+     * @param payload payload to deserialize from
+     * @return read message
+     * @throws BufferUnderflowException if the read message extends beyond the remaining bytes of the payload
+     */
+    public static FilteredBlock read(ByteBuffer payload) throws BufferUnderflowException, ProtocolException {
+        byte[] headerBytes = Buffers.readBytes(payload, Block.HEADER_SIZE);
+        Block header = Block.read(ByteBuffer.wrap(headerBytes));
+        PartialMerkleTree merkleTree = PartialMerkleTree.read(payload);
+        return new FilteredBlock(header, merkleTree);
     }
 
-    public FilteredBlock(NetworkParameters params, Block header, PartialMerkleTree pmt) {
-        super(params);
+    public FilteredBlock(Block header, PartialMerkleTree pmt) {
+        super();
         this.header = header;
         this.merkleTree = pmt;
     }
 
     @Override
-    public void bitcoinSerializeToStream(OutputStream stream) throws IOException {
-        if (header.transactions == null)
-            header.bitcoinSerializeToStream(stream);
-        else
-            header.cloneAsHeader().bitcoinSerializeToStream(stream);
-        merkleTree.bitcoinSerializeToStream(stream);
+    public int messageSize() {
+        return Block.HEADER_SIZE +
+                merkleTree.messageSize();
     }
 
     @Override
-    protected void parse() throws ProtocolException {
-        byte[] headerBytes = new byte[Block.HEADER_SIZE];
-        System.arraycopy(payload, 0, headerBytes, 0, Block.HEADER_SIZE);
-        header = params.getDefaultSerializer().makeBlock(headerBytes);
-        
-        merkleTree = new PartialMerkleTree(params, payload, Block.HEADER_SIZE);
-        
-        length = Block.HEADER_SIZE + merkleTree.getMessageSize();
+    public ByteBuffer write(ByteBuffer buf) throws BufferOverflowException {
+        if (header.isHeaderOnly())
+            header.write(buf);
+        else
+            header.asHeader().write(buf);
+        merkleTree.write(buf);
+        return buf;
     }
-    
+
     /**
      * Gets a list of leaf hashes which are contained in the partial merkle tree in this filtered block
-     * 
-     * @throws ProtocolException If the partial merkle block is invalid or the merkle root of the partial merkle block doesnt match the block header
+     *
+     * @throws ProtocolException If the partial merkle block is invalid or the merkle root of the partial merkle block doesn't match the block header
      */
     public List<Sha256Hash> getTransactionHashes() throws VerificationException {
         if (cachedTransactionHashes != null)
@@ -88,11 +101,10 @@ public class FilteredBlock extends Message {
      * Gets a copy of the block header
      */
     public Block getBlockHeader() {
-        return header.cloneAsHeader();
+        return header.asHeader();
     }
     
     /** Gets the hash of the block represented in this Filtered Block */
-    @Override
     public Sha256Hash getHash() {
         return header.getHash();
     }
@@ -102,7 +114,7 @@ public class FilteredBlock extends Message {
      * @return false if the tx is not relevant to this FilteredBlock
      */
     public boolean provideTransaction(Transaction tx) throws VerificationException {
-        Sha256Hash hash = tx.getHash();
+        Sha256Hash hash = tx.getTxId();
         if (getTransactionHashes().contains(hash)) {
             associatedTransactions.put(hash, tx);
             return true;
@@ -136,7 +148,7 @@ public class FilteredBlock extends Message {
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(associatedTransactions, header, merkleTree);
+        return Objects.hash(associatedTransactions, header, merkleTree);
     }
 
     @Override

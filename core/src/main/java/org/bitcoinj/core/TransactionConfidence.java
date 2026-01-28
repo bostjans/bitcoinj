@@ -17,18 +17,27 @@
 
 package org.bitcoinj.core;
 
-import com.google.common.collect.*;
-import com.google.common.util.concurrent.*;
-
-import org.bitcoinj.core.listeners.BlockChainListener;
-import org.bitcoinj.utils.*;
+import com.google.common.annotations.VisibleForTesting;
+import org.bitcoinj.base.Sha256Hash;
+import org.bitcoinj.base.internal.TimeUtils;
+import org.bitcoinj.utils.ListenerRegistration;
+import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.CoinSelector;
 import org.bitcoinj.wallet.Wallet;
 
-import javax.annotation.*;
-import java.util.*;
-import java.util.concurrent.*;
+import org.jspecify.annotations.Nullable;
+import java.time.Instant;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 
-import static com.google.common.base.Preconditions.*;
+import static org.bitcoinj.base.internal.Preconditions.checkState;
 
 // TODO: Modify the getDepthInBlocks method to require the chain height to be specified, in preparation for ceasing to touch every tx on every block.
 
@@ -48,7 +57,7 @@ import static com.google.common.base.Preconditions.*;
  * <li>Receiving it from multiple peers on the network. If your network connection is not being intercepted,
  *     hearing about a transaction from multiple peers indicates the network has accepted the transaction and
  *     thus miners likely have too (miners have the final say in whether a transaction becomes valid or not).</li>
- * <li>Seeing the transaction appear appear in a block on the main chain. Your confidence increases as the transaction
+ * <li>Seeing the transaction appear in a block on the best chain. Your confidence increases as the transaction
  *     becomes further buried under work. Work can be measured either in blocks (roughly, units of time), or
  *     amount of work done.</li>
  * </ul>
@@ -56,24 +65,29 @@ import static com.google.common.base.Preconditions.*;
  * <p>Alternatively, you may know that the transaction is "dead", that is, one or more of its inputs have
  * been double spent and will never confirm unless there is another re-org.</p>
  *
- * <p>TransactionConfidence is updated via the {@link org.bitcoinj.core.TransactionConfidence#incrementDepthInBlocks()}
+ * <p>TransactionConfidence is updated via the {@link TransactionConfidence#incrementDepthInBlocks()}
  * method to ensure the block depth is up to date.</p>
- * To make a copy that won't be changed, use {@link org.bitcoinj.core.TransactionConfidence#duplicate()}.
+ * To make a copy that won't be changed, use {@link TransactionConfidence#duplicate()}.
  */
 public class TransactionConfidence {
+    // For testing only
+    interface Factory {
+        TransactionConfidence createConfidence(Sha256Hash hash);
+    }
 
     /**
      * The peers that have announced the transaction to us. Network nodes don't have stable identities, so we use
      * IP address as an approximation. It's obviously vulnerable to being gamed if we allow arbitrary people to connect
      * to us, so only peers we explicitly connected to should go here.
      */
-    private CopyOnWriteArrayList<PeerAddress> broadcastBy;
-    /** The time the transaction was last announced to us. */
-    private Date lastBroadcastedAt;
+    private final CopyOnWriteArrayList<PeerAddress> broadcastBy;
+    /** The time the transaction was last announced to us, or {@code null} if unknown. */
+    @Nullable
+    private Instant lastBroadcastTime = null;
     /** The Transaction that this confidence object is associated with. */
     private final Sha256Hash hash;
     // Lazily created listeners array.
-    private CopyOnWriteArrayList<ListenerRegistration<Listener>> listeners;
+    private final CopyOnWriteArrayList<ListenerRegistration<Listener>> listeners;
 
     // The depth of the transaction on the best chain in blocks. An unconfirmed block has depth 0.
     private int depth;
@@ -88,7 +102,7 @@ public class TransactionConfidence {
          * announced and is considered valid by the network. A pending transaction will be announced if the containing
          * wallet has been attached to a live {@link PeerGroup} using {@link PeerGroup#addWallet(Wallet)}.
          * You can estimate how likely the transaction is to be included by connecting to a bunch of nodes then measuring
-         * how many announce it, using {@link org.bitcoinj.core.TransactionConfidence#numBroadcastPeers()}.
+         * how many announce it, using {@link TransactionConfidence#numBroadcastPeers()}.
          * Or if you saw it from a trusted peer, you can assume it's valid and will get mined sooner or later as well.
          */
         PENDING(2),
@@ -96,7 +110,7 @@ public class TransactionConfidence {
         /**
          * If DEAD, then it means the transaction won't confirm unless there is another re-org,
          * because some other transaction is spending one of its inputs. Such transactions should be alerted to the user
-         * so they can take action, eg, suspending shipment of goods if they are a merchant.
+         * so they can take action, e.g., suspending shipment of goods if they are a merchant.
          * It can also mean that a coinbase transaction has been made dead from it being moved onto a side chain.
          */
         DEAD(4),
@@ -115,7 +129,8 @@ public class TransactionConfidence {
          */
         UNKNOWN(0);
         
-        private int value;
+        private final int value;
+
         ConfidenceType(int value) {
             this.value = value;
         }
@@ -128,7 +143,7 @@ public class TransactionConfidence {
     private ConfidenceType confidenceType = ConfidenceType.UNKNOWN;
     private int appearedAtChainHeight = -1;
     // The transaction that double spent this one, if any.
-    private Transaction overridingTransaction;
+    private Sha256Hash overridingTxId;
 
     /**
      * Information about where the transaction was first seen (network, sent direct from peer, created by ourselves).
@@ -165,7 +180,7 @@ public class TransactionConfidence {
         /** An enum that describes why a transaction confidence listener is being invoked (i.e. the class of change). */
         enum ChangeReason {
             /**
-             * Occurs when the type returned by {@link org.bitcoinj.core.TransactionConfidence#getConfidenceType()}
+             * Occurs when the type returned by {@link TransactionConfidence#getConfidenceType()}
              * has changed. For example, if a PENDING transaction changes to BUILDING or DEAD, then this reason will
              * be given. It's a high level summary.
              */
@@ -207,7 +222,7 @@ public class TransactionConfidence {
      * a future from {@link #getDepthFuture(int)}.</p>
      */
     public void addEventListener(Executor executor, Listener listener) {
-        checkNotNull(listener);
+        Objects.requireNonNull(listener);
         listeners.addIfAbsent(new ListenerRegistration<>(listener, executor));
         pinnedConfidenceObjects.add(this);
     }
@@ -218,16 +233,16 @@ public class TransactionConfidence {
      *
      * <p>Note that this is NOT called when every block arrives. Instead it is called when the transaction
      * transitions between confidence states, ie, from not being seen in the chain to being seen (not necessarily in
-     * the best chain). If you want to know when the transaction gets buried under another block, implement a
-     * {@link BlockChainListener}, attach it to a {@link BlockChain} and then use the getters on the
-     * confidence object to determine the new depth.</p>
+     * the best chain). If you want to know when the transaction gets buried under another block, implement
+     * {@link org.bitcoinj.core.listeners.NewBestBlockListener} and related listeners, attach them to a
+     * {@link BlockChain} and then use the getters on the confidence object to determine the new depth.</p>
      */
     public void addEventListener(Listener listener) {
         addEventListener(Threading.USER_THREAD, listener);
     }
 
     public boolean removeEventListener(Listener listener) {
-        checkNotNull(listener);
+        Objects.requireNonNull(listener);
         boolean removed = ListenerRegistration.removeFromList(listener, listeners);
         if (listeners.isEmpty())
             pinnedConfidenceObjects.remove(this);
@@ -272,7 +287,7 @@ public class TransactionConfidence {
             return;
         this.confidenceType = confidenceType;
         if (confidenceType != ConfidenceType.DEAD) {
-            overridingTransaction = null;
+            overridingTxId = null;
         }
         if (confidenceType == ConfidenceType.PENDING || confidenceType == ConfidenceType.IN_CONFLICT) {
             depth = 0;
@@ -290,7 +305,7 @@ public class TransactionConfidence {
      * @return true if marked, false if this address was already seen
      */
     public boolean markBroadcastBy(PeerAddress address) {
-        lastBroadcastedAt = Utils.now();
+        lastBroadcastTime = TimeUtils.currentTime();
         if (!broadcastBy.addIfAbsent(address))
             return false;  // Duplicate.
         synchronized (this) {
@@ -312,8 +327,7 @@ public class TransactionConfidence {
      * Returns a snapshot of {@link PeerAddress}es that announced the transaction.
      */
     public Set<PeerAddress> getBroadcastBy() {
-        ListIterator<PeerAddress> iterator = broadcastBy.listIterator();
-        return Sets.newHashSet(iterator);
+        return Collections.unmodifiableSet(new HashSet<>(broadcastBy));
     }
 
     /** Returns true if the given address has been seen via markBroadcastBy() */
@@ -321,14 +335,20 @@ public class TransactionConfidence {
         return broadcastBy.contains(address);
     }
 
-    /** Return the time the transaction was last announced to us. */
-    public Date getLastBroadcastedAt() {
-        return lastBroadcastedAt;
+    /**
+     * Return the time the transaction was last announced to us, or empty if unknown.
+     * @return time the transaction was last announced to us, or empty if unknown
+     */
+    public Optional<Instant> getLastBroadcastTime() {
+        return Optional.ofNullable(lastBroadcastTime);
     }
 
-    /** Set the time the transaction was last announced to us. */
-    public void setLastBroadcastedAt(Date lastBroadcastedAt) {
-        this.lastBroadcastedAt = lastBroadcastedAt;
+    /**
+     * Set the time the transaction was last announced to us.
+     * @param lastBroadcastTime time the transaction was last announced to us
+     */
+    public void setLastBroadcastTime(Instant lastBroadcastTime) {
+        this.lastBroadcastTime = Objects.requireNonNull(lastBroadcastTime);
     }
 
     @Override
@@ -337,8 +357,8 @@ public class TransactionConfidence {
         int peers = numBroadcastPeers();
         if (peers > 0) {
             builder.append("Seen by ").append(peers).append(peers > 1 ? " peers" : " peer");
-            if (lastBroadcastedAt != null)
-                builder.append(" (most recently: ").append(Utils.dateTimeFormat(lastBroadcastedAt)).append(")");
+            if (lastBroadcastTime != null)
+                builder.append(" (most recently: ").append(TimeUtils.dateTimeFormat(lastBroadcastTime)).append(")");
             builder.append(". ");
         }
         switch (getConfidenceType()) {
@@ -402,22 +422,37 @@ public class TransactionConfidence {
     public void clearBroadcastBy() {
         checkState(getConfidenceType() != ConfidenceType.PENDING);
         broadcastBy.clear();
-        lastBroadcastedAt = null;
+        lastBroadcastTime = null;
     }
 
     /**
-     * If this transaction has been overridden by a double spend (is dead), this call returns the overriding transaction.
+     * If this transaction has been overridden by a double spend (is dead), this call returns the overriding transaction ID.
      * Note that this call <b>can return null</b> if you have migrated an old wallet, as pre-Jan 2012 wallets did not
      * store this information.
      *
-     * @return the transaction that double spent this one
+     * @return the transaction id that double spent this one
      * @throws IllegalStateException if confidence type is not DEAD.
      */
-    public synchronized Transaction getOverridingTransaction() {
+    @Nullable
+    public synchronized Sha256Hash getOverridingTxId() {
         if (getConfidenceType() != ConfidenceType.DEAD)
             throw new IllegalStateException("Confidence type is " + getConfidenceType() +
-                                            ", not DEAD");
-        return overridingTransaction;
+                    ", not DEAD");
+        return overridingTxId;
+    }
+
+    /**
+     * Called when the transaction becomes newly dead, that is, we learn that one of its inputs has already been spent
+     * in such a way that the double-spending transaction takes precedence over this one. It will not become valid now
+     * unless there is a re-org. Automatically sets the confidence type to DEAD. The overriding transaction may not
+     * directly double spend this one, but could also have double spent a dependency of this tx.
+     * @deprecated Use {@link #getOverridingTxId()} (and {@code null} is no-longer allowed)
+     */
+    @Deprecated
+    public synchronized void setOverridingTransaction(Transaction overridingTransaction) {
+        Objects.requireNonNull(overridingTransaction);
+        this.overridingTxId = overridingTransaction.getTxId();
+        setConfidenceType(ConfidenceType.DEAD);
     }
 
     /**
@@ -426,8 +461,8 @@ public class TransactionConfidence {
      * unless there is a re-org. Automatically sets the confidence type to DEAD. The overriding transaction may not
      * directly double spend this one, but could also have double spent a dependency of this tx.
      */
-    public synchronized void setOverridingTransaction(@Nullable Transaction overridingTransaction) {
-        this.overridingTransaction = overridingTransaction;
+    public synchronized void setOverridingTxId(@Nullable Sha256Hash overridingTxId) {
+        this.overridingTxId = overridingTxId;
         setConfidenceType(ConfidenceType.DEAD);
     }
 
@@ -435,10 +470,10 @@ public class TransactionConfidence {
     public TransactionConfidence duplicate() {
         TransactionConfidence c = new TransactionConfidence(hash);
         c.broadcastBy.addAll(broadcastBy);
-        c.lastBroadcastedAt = lastBroadcastedAt;
+        c.lastBroadcastTime = lastBroadcastTime;
         synchronized (this) {
             c.confidenceType = confidenceType;
-            c.overridingTransaction = overridingTransaction;
+            c.overridingTxId = overridingTxId;
             c.appearedAtChainHeight = appearedAtChainHeight;
         }
         return c;
@@ -452,19 +487,14 @@ public class TransactionConfidence {
      */
     public void queueListeners(final Listener.ChangeReason reason) {
         for (final ListenerRegistration<Listener> registration : listeners) {
-            registration.executor.execute(new Runnable() {
-                @Override
-                public void run() {
-                    registration.listener.onConfidenceChanged(TransactionConfidence.this, reason);
-                }
-            });
+            registration.executor.execute(() -> registration.listener.onConfidenceChanged(TransactionConfidence.this, reason));
         }
     }
 
     /**
      * The source of a transaction tries to identify where it came from originally. For instance, did we download it
      * from the peer to peer network, or make it ourselves, or receive it via Bluetooth, or import it from another app,
-     * and so on. This information is useful for {@link org.bitcoinj.wallet.CoinSelector} implementations to risk analyze
+     * and so on. This information is useful for {@link CoinSelector} implementations to risk analyze
      * transactions and decide when to spend them.
      */
     public synchronized Source getSource() {
@@ -474,11 +504,27 @@ public class TransactionConfidence {
     /**
      * The source of a transaction tries to identify where it came from originally. For instance, did we download it
      * from the peer to peer network, or make it ourselves, or receive it via Bluetooth, or import it from another app,
-     * and so on. This information is useful for {@link org.bitcoinj.wallet.CoinSelector} implementations to risk analyze
+     * and so on. This information is useful for {@link CoinSelector} implementations to risk analyze
      * transactions and decide when to spend them.
+     * <p>
+     * Once set it's immutable.
      */
     public synchronized void setSource(Source source) {
+        checkState(this.source == Source.UNKNOWN || source == this.source, () ->
+                "source cannot be set again: from " + this.source + " to " + source);
         this.source = source;
+    }
+
+    /**
+     * Called when we receive a transaction from the network. It's possible we may have already seen this locally
+     * so we don't want to override a setting of Source.SELF, but if source was not set, we should set it.
+     * This method should only be used internally to bitcoinj and will be removed in a future release.
+     */
+    @VisibleForTesting
+    public synchronized void maybeSetSourceToNetwork() {
+        if (source == Source.UNKNOWN) {
+            source = Source.NETWORK;
+        }
     }
 
     /**
@@ -486,23 +532,23 @@ public class TransactionConfidence {
      * depth to one will wait until it appears in a block on the best chain, and zero will wait until it has been seen
      * on the network.
      */
-    public synchronized ListenableFuture<TransactionConfidence> getDepthFuture(final int depth, Executor executor) {
-        final SettableFuture<TransactionConfidence> result = SettableFuture.create();
+    private synchronized CompletableFuture<TransactionConfidence> getDepthFuture(final int depth, Executor executor) {
+        final CompletableFuture<TransactionConfidence> result = new CompletableFuture<>();
         if (getDepthInBlocks() >= depth) {
-            result.set(this);
+            result.complete(this);
         }
         addEventListener(executor, new Listener() {
             @Override public void onConfidenceChanged(TransactionConfidence confidence, ChangeReason reason) {
                 if (getDepthInBlocks() >= depth) {
                     removeEventListener(this);
-                    result.set(confidence);
+                    result.complete(confidence);
                 }
             }
         });
         return result;
     }
 
-    public synchronized ListenableFuture<TransactionConfidence> getDepthFuture(final int depth) {
+    public synchronized CompletableFuture<TransactionConfidence> getDepthFuture(final int depth) {
         return getDepthFuture(depth, Threading.USER_THREAD);
     }
 

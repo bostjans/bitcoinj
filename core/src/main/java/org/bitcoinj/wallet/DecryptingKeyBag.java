@@ -16,27 +16,26 @@
 
 package org.bitcoinj.wallet;
 
-import org.bitcoinj.core.ECKey;
-import org.spongycastle.crypto.params.KeyParameter;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.crypto.AesKey;
+import org.bitcoinj.crypto.ECKey;
 
-import javax.annotation.Nullable;
-
+import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
-
-import static com.google.common.base.Preconditions.checkNotNull;
+import java.util.Objects;
 
 /**
  * A DecryptingKeyBag filters a pre-existing key bag, decrypting keys as they are requested using the provided
- * AES key. If the keys are encrypted and no AES key provided, {@link org.bitcoinj.core.ECKey.KeyIsEncryptedException}
+ * AES key. If the keys are encrypted and no AES key provided, {@link ECKey.KeyIsEncryptedException}
  * will be thrown.
  */
 public class DecryptingKeyBag implements KeyBag {
     protected final KeyBag target;
-    protected final KeyParameter aesKey;
+    protected final AesKey aesKey;
 
-    public DecryptingKeyBag(KeyBag target, @Nullable KeyParameter aesKey) {
-        this.target = checkNotNull(target);
+    public DecryptingKeyBag(KeyBag target, @Nullable AesKey aesKey) {
+        this.target = Objects.requireNonNull(target);
         this.aesKey = aesKey;
     }
 
@@ -63,14 +62,14 @@ public class DecryptingKeyBag implements KeyBag {
 
     @Nullable
     @Override
-    public ECKey findKeyFromPubHash(byte[] pubkeyHash) {
-        return maybeDecrypt(target.findKeyFromPubHash(pubkeyHash));
+    public ECKey findKeyFromPubKeyHash(byte[] pubKeyHash, @Nullable ScriptType scriptType) {
+        return maybeDecrypt(target.findKeyFromPubKeyHash(pubKeyHash, scriptType));
     }
 
     @Nullable
     @Override
-    public ECKey findKeyFromPubKey(byte[] pubkey) {
-        return maybeDecrypt(target.findKeyFromPubKey(pubkey));
+    public ECKey findKeyFromPubKey(byte[] pubKey) {
+        return maybeDecrypt(target.findKeyFromPubKey(pubKey));
     }
 
     @Nullable

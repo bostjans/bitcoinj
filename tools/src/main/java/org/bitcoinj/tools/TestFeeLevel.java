@@ -16,23 +16,25 @@
 
 package org.bitcoinj.tools;
 
-import org.bitcoinj.core.*;
-import org.bitcoinj.core.listeners.PeerConnectedEventListener;
-import org.bitcoinj.core.listeners.PeerDisconnectedEventListener;
+import org.bitcoinj.base.BitcoinNetwork;
+import org.bitcoinj.base.Coin;
+import org.bitcoinj.base.ScriptType;
+import org.bitcoinj.core.InsufficientMoneyException;
+import org.bitcoinj.core.Transaction;
 import org.bitcoinj.kits.WalletAppKit;
-import org.bitcoinj.params.MainNetParams;
 import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.wallet.KeyChainGroupStructure;
 import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
 import java.io.File;
+import java.util.concurrent.ExecutionException;
 
 /**
  * A program that sends a transaction with the specified fee and measures how long it takes to confirm.
  */
 public class TestFeeLevel {
 
-    private static final MainNetParams PARAMS = MainNetParams.get();
     private static final int NUM_OUTPUTS = 2;
     private static WalletAppKit kit;
 
@@ -46,7 +48,7 @@ public class TestFeeLevel {
         Coin feeRateToTest = Coin.valueOf(Long.parseLong(args[0]));
         System.out.println("Fee rate to test is " + feeRateToTest.toFriendlyString() + "/kB");
 
-        kit = new WalletAppKit(PARAMS, new File("."), "testfeelevel");
+        kit = new WalletAppKit(BitcoinNetwork.MAINNET, ScriptType.P2WPKH, KeyChainGroupStructure.BIP32, new File("."), "testfeelevel");
         kit.startAsync();
         kit.awaitRunning();
         try {
@@ -57,7 +59,7 @@ public class TestFeeLevel {
         }
     }
 
-    private static void go(Coin feeRateToTest, int numOutputs) throws InterruptedException, java.util.concurrent.ExecutionException, InsufficientMoneyException {
+    private static void go(Coin feeRateToTest, int numOutputs) throws InterruptedException, ExecutionException, InsufficientMoneyException {
         System.out.println("Wallet has " + kit.wallet().getBalance().toFriendlyString()
                 + "; current receive address is " + kit.wallet().currentReceiveAddress());
 
@@ -73,7 +75,7 @@ public class TestFeeLevel {
 
         Coin value = kit.wallet().getBalance().divide(2); // Keep a chunk for the fee.
         Coin outputValue = value.divide(numOutputs);
-        Transaction transaction = new Transaction(PARAMS);
+        Transaction transaction = new Transaction();
         for (int i = 0; i < numOutputs - 1; i++) {
             transaction.addOutput(outputValue, kit.wallet().freshReceiveAddress());
             value = value.subtract(outputValue);
@@ -83,24 +85,16 @@ public class TestFeeLevel {
         request.feePerKb = feeRateToTest;
         request.ensureMinRequiredFee = false;
         kit.wallet().completeTx(request);
-        System.out.println("Size in bytes is " + request.tx.unsafeBitcoinSerialize().length);
+        System.out.println("Size in bytes is " + request.tx.messageSize());
         System.out.println("TX is " + request.tx);
         System.out.println("Waiting for " + kit.peerGroup().getMaxConnections() + " connected peers");
-        kit.peerGroup().addDisconnectedEventListener(new PeerDisconnectedEventListener() {
-            @Override
-            public void onPeerDisconnected(Peer peer, int peerCount) {
-                System.out.println(peerCount + " peers connected");
-            }
-        });
-        kit.peerGroup().addConnectedEventListener(new PeerConnectedEventListener() {
-            @Override
-            public void onPeerConnected(Peer peer, int peerCount) {
-                System.out.println(peerCount + " peers connected");
-            }
-        });
-        kit.peerGroup().broadcastTransaction(request.tx).future().get();
+        kit.peerGroup().addDisconnectedEventListener((peer, peerCount) -> System.out.println(peerCount +
+                " peers connected"));
+        kit.peerGroup().addConnectedEventListener((peer, peerCount) -> System.out.println(peerCount +
+                " peers connected"));
+        kit.peerGroup().broadcastTransaction(request.tx).awaitRelayed().get();
         System.out.println("Send complete, waiting for confirmation");
-        request.tx.getConfidence().getDepthFuture(1).get();
+        kit.wallet().waitForConfirmations(request.tx, 1).get();
 
         int heightNow = kit.chain().getBestChainHeight();
         System.out.println("Height after confirmation is " + heightNow);
